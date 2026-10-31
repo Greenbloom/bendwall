@@ -1,0 +1,7 @@
+{
+  "type": "preset",
+  "file": "",
+  "title": "Theme",
+  "dependency": "missing-pack",
+  "preset": {"speed": 0.5}
+}

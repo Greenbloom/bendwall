@@ -1,0 +1,6 @@
+{
+  "objects": [
+    {"name": "bg", "image": "models/bg.json"},
+    {"name": "sparks", "particle": "particles/sparks.json"}
+  ]
+}

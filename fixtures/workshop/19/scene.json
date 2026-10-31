@@ -1,0 +1,5 @@
+{
+  "objects": [
+    {"name": "hero", "model": "models/hero.mdl"}
+  ]
+}

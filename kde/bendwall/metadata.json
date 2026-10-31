@@ -1,0 +1,12 @@
+{
+    "KPackageStructure": "Plasma/Wallpaper",
+    "KPlugin": {
+        "Authors": [{ "Name": "Philip Tams" }],
+        "Description": "Wallpaper Engine scenes through the Bend2 engine",
+        "Icon": "preferences-desktop-wallpaper",
+        "Id": "com.philip.bendwall",
+        "License": "MIT",
+        "Name": "Bendwall"
+    },
+    "X-Plasma-API-Minimum-Version": "6.0"
+}

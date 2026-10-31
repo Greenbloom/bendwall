@@ -1,0 +1,6 @@
+build/
+host/*.so
+*.gpu
+uploads/
+*.o
+/tmp/

@@ -1,0 +1,13 @@
+{
+  "passes": [
+    {
+      "shader": "genericimage2",
+      "blending": "normal",
+      "depthtest": "disabled",
+      "combos": {"TINT": 1},
+      "constantshadervalues": {"boost": 0},
+      "usershadervalues": {"boost": "speed"},
+      "textures": ["materials/bg"]
+    }
+  ]
+}

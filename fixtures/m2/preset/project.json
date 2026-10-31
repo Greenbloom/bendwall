@@ -1,0 +1,11 @@
+{
+  "type": "preset",
+  "file": "",
+  "title": "Night",
+  "dependency": "base",
+  "preset": {
+    "color1": "0 0 0.2",
+    "speed": 0.5,
+    "extra": "z"
+  }
+}

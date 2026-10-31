@@ -1,0 +1,14 @@
+{
+  "type": "Scene",
+  "file": "scene.json",
+  "title": "Proof",
+  "general": {
+    "properties": [
+      {"name": "color1", "type": "color", "value": "1 0 0", "order": 1, "text": "Color"},
+      {"name": "speed", "type": "slider", "value": 0.25, "min": 0, "max": 1},
+      {"name": "spin", "type": "bool", "value": false},
+      {"name": "mode", "type": "combo", "value": "a", "options": [{"label": "A", "value": "a"}, {"label": "B", "value": "b"}]}
+    ],
+    "supportsaudioprocessing": true
+  }
+}

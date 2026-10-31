@@ -3,4 +3,5 @@ host/*.so
 *.gpu
 uploads/
 *.o
-/tmp/
+__pycache__/
+*.pyc

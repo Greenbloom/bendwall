@@ -1,0 +1,41 @@
+{
+  "camera": {"center": "16 16 0", "eye": "0 0 1", "up": "0 1 0"},
+  "general": {
+    "orthogonalprojection": {"width": 32, "height": 32, "auto": false},
+    "clearcolor": "0 0 0",
+    "bloom": false
+  },
+  "objects": [
+    {
+      "id": 1,
+      "name": "bg",
+      "origin": "16 16 0",
+      "size": "32 32",
+      "parallaxDepth": "0 0",
+      "alpha": 1,
+      "image": "models/bg.json",
+      "effects": [
+        {"file": "effects/tint/effect.json", "id": 1, "visible": true, "passes": [{"id": 0, "combos": {"TINT": 1}}]}
+      ]
+    },
+    {
+      "name": "star",
+      "origin": "24 10 0",
+      "size": "4 4",
+      "parallaxDepth": "4 0",
+      "alpha": {"value": 1, "user": "speed"},
+      "image": "models/star.json"
+    },
+    {
+      "name": "sparks",
+      "origin": "8 8 0",
+      "particle": "particles/sparks.json"
+    },
+    {
+      "name": "label",
+      "alpha": {"value": 1, "user": {"name": "speed"}},
+      "angles": {"value": "0 0 0", "script": "return value;"},
+      "text": {"value": "hi", "font": "systemfont_arial", "pointsize": 12}
+    }
+  ]
+}

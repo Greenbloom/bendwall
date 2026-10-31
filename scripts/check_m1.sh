@@ -6,7 +6,7 @@ export PATH="$HOME/.bend/bin:$PATH"
 export BEND_NO_TELEMETRY=1
 export BENDWALL_NATIVE="${BENDWALL_NATIVE:-$PWD/host/libbendwall.so}"
 mkdir -p build
-gcc -shared -fPIC -O2 -o host/libbendwall.so host/native.c -lpng -ljpeg
+gcc -shared -fPIC -O2 -o host/libbendwall.so host/native.c host/gl.c -lpng -ljpeg -lEGL -lGL
 python3 tools/mkfixtures.py
 bend PROOF.bend --check-only | grep -q "ALL PROOFS CHECK"
 bend t_m1.bend -o build/m1

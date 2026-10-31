@@ -1,0 +1,12 @@
+{
+  "passes": [
+    {
+      "shader": "layer",
+      "blending": "normal",
+      "combos": {"TINT": 1},
+      "constantshadervalues": {"boost": 0},
+      "usershadervalues": {"boost": "speed"},
+      "textures": ["materials/bg"]
+    }
+  ]
+}

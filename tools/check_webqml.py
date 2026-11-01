@@ -35,12 +35,14 @@ if "bendwall/contents/ui/main.qml" not in watch:
     raise SystemExit("watch.qml does not load main.qml")
 if "QtWebEngine" in harness or "QtWebEngine" in watch:
     raise SystemExit("harness or watch imports QtWebEngine")
-if "WebEngineProfilePrototype" not in web or "profileProto.instance" not in web:
-    raise SystemExit("web profile is not created from WebEngineProfilePrototype")
+if "WebEngineProfilePrototype" in web or "profileProto" in web:
+    raise SystemExit("web profile still instantiates WebEngineProfilePrototype")
 if "WebEngineProfile {" in web:
     raise SystemExit("WebEngineProfile is created directly")
-if "userScripts.insert" not in web:
-    raise SystemExit("shim is not inserted on the profile instance")
+if "userScripts.insert" not in web or "view.profile" not in web:
+    raise SystemExit("shim is not inserted on the view profile")
+if "bendwallQtVersion" not in web:
+    raise SystemExit("web profile is not gated on the runtime Qt version")
 if shim != host:
     raise SystemExit("package webshim.js drifted from host/webshim.js")
 if "applyUserProperties" not in shim or "wallpaperRegisterAudioListener" not in shim:

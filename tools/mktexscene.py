@@ -361,6 +361,224 @@ def write_vidaud():
                ' "general": {"volume": 100} }\n')
 
 
+def solid_tex(w, h, px):
+    rgba = px * (w * h)
+    return tex(fmt=0, tw=w, th=h, iw=w, ih=h, bv=2, images=[[mip(w, h, rgba)]])
+
+
+def blank_gif_tex():
+    """Frame 0 is fully transparent. Frame 1 is opaque red."""
+    clear = bytes([0, 0, 0, 0]) * (8 * 8)
+    red = RED * (8 * 8)
+    return tex(
+        fmt=0, flags=0x4, tw=8, th=8, iw=8, ih=8, bv=2,
+        images=[
+            [mip(8, 8, clear)],
+            [mip(8, 8, red)],
+        ],
+        sprites={
+            "sv": 1,
+            "frames": [
+                {"img": 0, "t": 0.5, "x": 0, "y": 0, "w": 8, "wy": 0, "hx": 0, "h": 8},
+                {"img": 1, "t": 2.0, "x": 0, "y": 0, "w": 8, "wy": 0, "hx": 0, "h": 8},
+            ],
+        },
+    )
+
+
+def part_body(rate, count, speed, size, life, burst, texture):
+    tex_json = "null" if texture is None else '"%s"' % texture
+    inst = 1 if burst else 0
+    return """{
+  "material": "materials/p.json",
+  "maxcount": %d,
+  "starttime": 0,
+  "emitter": [{
+    "name": "sphererandom",
+    "rate": %s,
+    "instantaneous": %d,
+    "origin": "0 0 0",
+    "directions": "1 0 0",
+    "distancemin": 0,
+    "distancemax": 0,
+    "speedmin": %s,
+    "speedmax": %s
+  }],
+  "initializer": [
+    {"name": "lifetimerandom", "min": %s, "max": %s},
+    {"name": "sizerandom", "min": %s, "max": %s},
+    {"name": "alpharandom", "min": 1, "max": 1},
+    {"name": "colorrandom", "min": "1 1 1", "max": "1 1 1"},
+    {"name": "rotationrandom", "min": 0, "max": 0}
+  ],
+  "operator": [
+    {"name": "movement", "gravity": "0 0 0", "drag": 0}
+  ],
+  "renderer": [{"name": "sprite"}]
+}
+""" % (count, rate, inst, speed, speed, life, life, size, size), tex_json
+
+
+def write_one_part(root, origin, rate, count, speed, size, life, burst, texture, blending):
+    body, tex_json = part_body(rate, count, speed, size, life, burst, texture)
+    write_text(os.path.join(root, "particles", "p.json"), body)
+    write_text(os.path.join(root, "materials", "p.json"),
+               '{"passes": [{"blending": "%s", "textures": [%s]}]}\n' % (blending, tex_json))
+    scene = """{
+  "general": {"orthogonalprojection": {"width": 160, "height": 90}},
+  "objects": [
+    {"name": "bg", "image": "textures/bg.png", "origin": "80 45 0", "size": "160 90 0"},
+    {
+      "name": "p",
+      "particle": "particles/p.json",
+      "origin": "%s 0",
+      "angles": "0 0 0",
+      "scale": "1 1 1",
+      "alpha": 1
+    }
+  ]
+}
+""" % origin
+    write_text(os.path.join(root, "scene.json"), scene)
+    write_text(os.path.join(root, "project.json"),
+               '{ "type": "scene", "file": "scene.json", "title": "Particles" }\n')
+    write(os.path.join(root, "textures", "bg.png"), png_rgba(4, 4, bytes([12, 16, 28, 255]) * 16))
+
+
+def write_resolve():
+    """Jpg slots, null images, user properties, instance textures, blank gif."""
+    plate = bytes([12, 16, 28, 255])
+    yellow = bytes([240, 200, 16, 255])
+    city = bytes([10, 80, 240, 255])
+    poster = bytes([0, 200, 60, 255])
+    black = bytes([0, 0, 0, 255])
+    write(os.path.join(PLAY, "halo-assets", "materials", "particle", "halo_4.tex"),
+          solid_tex(4, 4, yellow))
+    halo = os.path.join(PLAY, "halo")
+    write_one_part(halo, "24 45", "1", 8, "70", "16", "3", 0, "particle/halo_4.jpg", "translucent")
+    soft = os.path.join(PLAY, "softpart")
+    write_one_part(soft, "80 45", "1", 4, "0", "24", "3", 1, None, "translucent")
+    nope = os.path.join(PLAY, "nope")
+    write_one_part(nope, "80 45", "1", 4, "0", "24", "3", 1, "particle/gone.jpg", "translucent")
+
+    city_dir = os.path.join(PLAY, "city")
+    project(city_dir)
+    write_text(os.path.join(city_dir, "scene.json"), """{
+  "general": {"orthogonalprojection": {"width": 160, "height": 90}},
+  "objects": [
+    {"name": "bg", "image": "models/bg.json", "origin": "80 45 0", "size": "160 90", "alpha": 1},
+    {"name": "decoy", "image": null}
+  ]
+}
+""")
+    write_text(os.path.join(city_dir, "models", "bg.json"),
+               '{"material": "materials/bg.json", "fullscreen": true, "width": 160, "height": 90}\n')
+    write_text(os.path.join(city_dir, "materials", "bg.json"),
+               '{"passes": [{"textures": [{"name": "backgrounds/city.jpg"}]}]}\n')
+    write(os.path.join(city_dir, "materials", "backgrounds", "city.tex"), solid_tex(4, 4, city))
+
+    user = os.path.join(PLAY, "userpic")
+    write_text(os.path.join(user, "project.json"),
+               '{ "type": "scene", "file": "scene.json", "title": "User",'
+               ' "general": {"properties": {"picture": {"type": "file",'
+               ' "value": "backgrounds/poster.jpg"}}} }\n')
+    write_text(os.path.join(user, "scene.json"), """{
+  "general": {"orthogonalprojection": {"width": 160, "height": 90}},
+  "objects": [{
+    "name": "bg",
+    "image": {"user": "picture"},
+    "origin": "80 45 0",
+    "size": "160 90",
+    "alpha": 1
+  }]
+}
+""")
+    write(os.path.join(user, "materials", "backgrounds", "poster.tex"), solid_tex(4, 4, poster))
+
+    inst = os.path.join(PLAY, "instpic")
+    project(inst)
+    write_text(os.path.join(inst, "scene.json"), """{
+  "general": {"orthogonalprojection": {"width": 160, "height": 90}},
+  "objects": [{
+    "name": "bg",
+    "image": "models/bg.json",
+    "origin": "80 45 0",
+    "size": "160 90",
+    "alpha": 1,
+    "instance": {"textures": ["backgrounds/poster.jpg"]}
+  }]
+}
+""")
+    write_text(os.path.join(inst, "models", "bg.json"),
+               '{"material": "materials/bg.json", "fullscreen": true}\n')
+    write_text(os.path.join(inst, "materials", "bg.json"),
+               '{"passes": [{"textures": ["black"]}]}\n')
+    write(os.path.join(inst, "materials", "black.tex"), solid_tex(2, 2, black))
+    write(os.path.join(inst, "materials", "backgrounds", "poster.tex"), solid_tex(4, 4, poster))
+
+    titled = os.path.join(PLAY, "titled")
+    write_text(os.path.join(titled, "project.json"),
+               '{ "type": "scene", "file": "scene.json",'
+               ' "title": "Tokyo Night [2560x1440p]" }\n')
+    write_text(os.path.join(titled, "scene.json"), """{
+  "general": {"orthogonalprojection": {"width": 160, "height": 90}},
+  "objects": [{
+    "name": "bg", "image": "textures/bg.png",
+    "origin": "80 45 0", "size": "160 90 0", "alpha": 1
+  }]
+}
+""")
+    write(os.path.join(titled, "textures", "bg.png"), png_rgba(4, 4, plate * 16))
+
+    blank = os.path.join(PLAY, "blankgif")
+    write(os.path.join(blank, "gifscene.pkg"), pkg([
+        ("gifscene.json",
+         ('{"general":{"orthogonalprojection":{"width":160,"height":90}},'
+          '"objects":[{"name":"bg","image":"models/bg.json","alpha":1}]}').encode("utf-8")),
+        ("models/bg.json",
+         b'{"material":"materials/bg.json","fullscreen":true,"width":160,"height":90}\n'),
+        ("materials/bg.json", b'{"passes":[{"textures":["background"]}]}\n'),
+        ("materials/background.tex", blank_gif_tex()),
+    ], 9))
+    write_text(os.path.join(blank, "project.json"),
+               '{ "type": "scene", "file": "gifscene.json", "title": "Blank frame" }\n')
+
+    swarm = os.path.join(PLAY, "swarm")
+    project(swarm)
+    write(os.path.join(swarm, "textures", "dot.png"), png_rgba(2, 2, bytes([255, 255, 255, 255]) * 4))
+    write(os.path.join(swarm, "textures", "bg.png"), png_rgba(2, 2, plate * 4))
+    write_text(os.path.join(swarm, "particles", "p.json"), """{
+  "material": "materials/p.json",
+  "maxcount": 128,
+  "starttime": 0,
+  "emitter": [{
+    "name": "sphererandom", "rate": 8, "instantaneous": 1,
+    "origin": "0 0 0", "directions": "1 0 0",
+    "distancemin": 0, "distancemax": 0, "speedmin": 10, "speedmax": 10
+  }],
+  "initializer": [
+    {"name": "lifetimerandom", "min": 4, "max": 4},
+    {"name": "sizerandom", "min": 4, "max": 4},
+    {"name": "alpharandom", "min": 1, "max": 1},
+    {"name": "colorrandom", "min": "1 1 1", "max": "1 1 1"}
+  ],
+  "operator": [{"name": "movement", "gravity": "0 0 0", "drag": 0}]
+}
+""")
+    write_text(os.path.join(swarm, "materials", "p.json"),
+               '{"passes": [{"blending": "translucent", "textures": ["textures/dot.png"]}]}\n')
+    objs = []
+    for i in range(8):
+        objs.append(
+            '{"name":"e%d","image":null,"particle":"particles/p.json","origin":"%d 45 0","alpha":1}'
+            % (i, 10 + i * 16)
+        )
+    write_text(os.path.join(swarm, "scene.json"),
+               '{"general":{"orthogonalprojection":{"width":640,"height":360}},'
+               '"objects":[{"name":"bg","image":"textures/bg.png","origin":"320 180 0","size":"640 360 0"},'
+               + ",".join(objs) + "]}\n")
+
+
 def main():
     write(os.path.join(PLAY, "texscene", "scene.pkg"), scene_pkg())
     write(os.path.join(PLAY, "texscene", "decoy.png"), png_rgba(8, 8, YELLOW * 64))
@@ -472,6 +690,7 @@ def main():
     write(os.path.join(PLAY, "sheet.tex"), sheet_tex())
     write_spark()
     write_vidaud()
+    write_resolve()
     print("mktexscene ok")
 
 

@@ -252,6 +252,7 @@ static int loadWatch(QQmlApplicationEngine* engine, QList<QQmlError>* errs, cons
     engine->rootContext()->setContextProperty(QStringLiteral("wallpaperDir"), abs);
     engine->rootContext()->setContextProperty(QStringLiteral("wallpaperKind"), topType(abs));
     engine->rootContext()->setContextProperty(QStringLiteral("wallpaperAudio"), audio);
+    engine->rootContext()->setContextProperty(QStringLiteral("bendwallQtVersion"), QString::fromLatin1(qVersion()));
     engine->load(QUrl::fromLocalFile(qml));
     if (engine->rootObjects().isEmpty()) {
         if (errs) {

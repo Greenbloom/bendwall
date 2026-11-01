@@ -37,7 +37,8 @@ typedef struct BwLayer {
 /* One sprite particle system, already scaled by instanceoverride.
    Positions are scene pixels, x right, y down, the same as image layers.
    size_b < 0 means size grows by size_rate per second instead of a lerp.
-   rgba is the material texture (or the checker when that texture is missing). */
+   rgba is the material texture, or a white radial sprite when that
+   texture has no name or does not resolve. Particles are never the checker. */
 typedef struct BwPartSys {
     float ox, oy;
     float dirx, diry;
@@ -69,7 +70,7 @@ typedef struct BwPlan {
     char type[32];
     char file[512];
     char title[160];
-    char text[160];
+    char text[512];
     char video[1100];
     char page[1100];
     char kind[16];
@@ -89,7 +90,9 @@ typedef struct BwPlan {
 
 /* Top-level project keys only. Scene images walk object → model → material
    → texture, then a .tex / PNG / JPEG in the project or BENDWALL_ASSETS.
-   A missing texture is logged and stored as a checkerboard layer. */
+   A .jpg/.png slot is also materials/<path-without-ext>.tex. A missing
+   image texture is logged and stored as a checkerboard layer. An image
+   value of null is not a layer. The project title is not drawn. */
 int bw_plan_load(const char* dir, const char* assets, BwPlan* out);
 void bw_plan_free(BwPlan* plan);
 /* 1 when every requested picture decoded, or the scene is text only.

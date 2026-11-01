@@ -179,6 +179,43 @@ if away[0] < 240 or not (140 <= away[1] <= 210) or not (40 <= away[2] <= 100):
 assetp = [int(x) for x in grab(r"SPARKASSET (\d+) (\d+) (\d+)").groups()]
 if assetp[0] < 240 or not (140 <= assetp[1] <= 210) or not (40 <= assetp[2] <= 100):
     raise SystemExit(f"sparkasset {assetp}")
+halo = grab(r"HALO home=(\d+) (\d+) (\d+) away=(\d+) (\d+) (\d+)")
+hh = [int(halo.group(i)) for i in (1, 2, 3)]
+ha = [int(halo.group(i)) for i in (4, 5, 6)]
+if hh[0] > 40 or hh[1] > 40 or hh[2] > 50:
+    raise SystemExit("halo home " + str(hh))
+if ha[0] < 220 or ha[1] < 160 or ha[2] > 40:
+    raise SystemExit("halo away " + str(ha))
+soft = grab(r"SOFT (\d+) (\d+) (\d+) miss=(\d+)")
+if int(soft.group(1)) < 200 or int(soft.group(2)) < 200 or int(soft.group(3)) < 200 or soft.group(4) != "0":
+    raise SystemExit(soft.group(0))
+nope = grab(r"NOPE (\d+) (\d+) (\d+) miss=(\d+)")
+if int(nope.group(1)) < 200 or int(nope.group(2)) < 200 or int(nope.group(3)) < 200 or int(nope.group(4)) < 1:
+    raise SystemExit(nope.group(0))
+city = [int(x) for x in grab(r"CITY (\d+) (\d+) (\d+)").groups()]
+if city[0] > 40 or city[1] < 50 or city[2] < 200:
+    raise SystemExit(f"city {city}")
+userp = [int(x) for x in grab(r"USER (\d+) (\d+) (\d+)").groups()]
+if userp[0] > 40 or userp[1] < 160 or userp[2] > 100:
+    raise SystemExit(f"user {userp}")
+inst = [int(x) for x in grab(r"INST (\d+) (\d+) (\d+)").groups()]
+if inst[0] > 40 or inst[1] < 160 or inst[2] > 100:
+    raise SystemExit(f"inst {inst}")
+title_w = int(grab(r"TITLE white=(\d+)").group(1))
+if title_w >= 8:
+    raise SystemExit(f"title overlay white={title_w}")
+blank = [int(x) for x in grab(r"BLANK (\d+) (\d+) (\d+)").groups()]
+if blank[0] < 200 or blank[1] > 40 or blank[2] > 40:
+    raise SystemExit(f"blank {blank}")
+swarm = grab(r"SWARM cpu=([0-9.]+) alive=(\d+)")
+if float(swarm.group(1)) >= 30.0 or not (500 <= int(swarm.group(2)) <= 640):
+    raise SystemExit(swarm.group(0))
+if "materials/particle/gone.tex" not in err:
+    raise SystemExit("named particle miss was not logged\n" + err)
+if "(no path)" not in err:
+    raise SystemExit("nameless particle was not logged\n" + err)
+if "halo_4" in err or "(no path) name=decoy" in err:
+    raise SystemExit("resolved texture still logged\n" + err)
 if "PLAYMAIN ok" not in text:
     raise SystemExit(text)
 print("PLAY PASS")

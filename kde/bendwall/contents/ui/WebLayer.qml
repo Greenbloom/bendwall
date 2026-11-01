@@ -68,25 +68,49 @@ Item {
         sourceUrl: Qt.resolvedUrl("webshim.js")
     }
 
-    /* Qt 6.11 will not create a WebEngineProfile element from QML.
-       WebEngineProfilePrototype (6.9+) does. Leaving storageName unset
-       makes the instance off-the-record. The shim is attached to that
-       instance, which is where userScripts live. */
-    WebEngineProfilePrototype {
-        id: profileProto
-        Component.onCompleted: {
-            if (instance)
-                instance.userScripts.insert(shim)
+    /* Qt 6.11.3 reports a profile element as not creatable, and older
+       Qt has no separate profile type we can build here. The view's
+       default profile accepts userScripts on every version we run,
+       including 6.11. bendwallQtVersion is the runtime Qt string. */
+    function runtimeQt() {
+        var major = 0
+        var minor = 0
+        try {
+            if (typeof bendwallQtVersion === "string") {
+                var parts = bendwallQtVersion.split(".")
+                major = parseInt(parts[0])
+                minor = parseInt(parts[1])
+            }
+        } catch (e) {
         }
+        if (isNaN(major))
+            major = 0
+        if (isNaN(minor))
+            minor = 0
+        return { major: major, minor: minor }
+    }
+
+    function attachShim() {
+        var q = runtimeQt()
+        var profile = view.profile
+        /* 6.11 and anything older, and a missing version, stay on the
+           default profile. A newer runtime uses that same profile: an
+           explicit profile element is not creatable on 6.11. */
+        if (q.major < 6 || (q.major === 6 && q.minor <= 11) || q.major === 0)
+            profile = view.profile
+        else
+            profile = view.profile
+        if (profile)
+            profile.userScripts.insert(shim)
+        view.url = host.pageUrl()
     }
 
     WebEngineView {
         id: view
         anchors.fill: parent
-        profile: profileProto.instance
         settings.localContentCanAccessFileUrls: true
         settings.localContentCanAccessRemoteUrls: true
-        Component.onCompleted: url = host.pageUrl()
+        Component.onCompleted: host.attachShim()
         onLoadingChanged: function (load) {
             if (load.status === WebEngineView.LoadSucceededStatus) {
                 host.pageReady = true

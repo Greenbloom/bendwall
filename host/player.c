@@ -108,7 +108,7 @@ static pthread_mutex_t g_gain_mu = PTHREAD_MUTEX_INITIALIZER;
 static int g_uni;
 static int g_scroll, g_spin, g_opacity, g_colorkey, g_tint, g_pulse;
 static int g_has_text, g_has_video, g_has_image, g_text_layer;
-static char g_text[160];
+static char g_text[512];
 static char g_page[1100];
 static char g_kind[16];
 static char g_line[640];
@@ -498,6 +498,7 @@ static void sync_sprites(void) {
 
 #define MAX_SYS 64
 #define MAX_P 128
+#define MAX_ALIVE 640
 
 typedef struct Part {
   float x, y, vx, vy, age, life, size, ang, r, g, b, a;
@@ -529,11 +530,17 @@ static int alive_count(void) {
   return n;
 }
 
+static int can_spawn(Sys* S) {
+  if (!S || S->n >= S->spec.maxcount || S->n >= MAX_P) return 0;
+  if (alive_count() >= MAX_ALIVE) return 0;
+  return 1;
+}
+
 static void spawn_one(Sys* S) {
   Part* p;
   float dirx, diry, dist, sp, life, sz, a, cr, cg, cb, ang;
   uint32_t rng;
-  if (!S || S->n >= S->spec.maxcount || S->n >= MAX_P) return;
+  if (!can_spawn(S)) return;
   rng = S->rng;
   if (S->spec.dirx * S->spec.dirx + S->spec.diry * S->spec.diry > 1e-8f) {
     dirx = S->spec.dirx;
@@ -611,10 +618,10 @@ static void sim_particles(float dt) {
     if (S->spec.burst && !S->burst_done) {
       int k;
       S->burst_done = 1;
-      for (k = 0; k < S->spec.maxcount && k < MAX_P; k++) spawn_one(S);
+      for (k = 0; k < S->spec.maxcount && k < MAX_P && can_spawn(S); k++) spawn_one(S);
     }
     S->acc += S->spec.rate * dt;
-    while (S->acc >= 1.f && S->n < S->spec.maxcount && S->n < MAX_P && guard++ < MAX_P) {
+    while (S->acc >= 1.f && can_spawn(S) && guard++ < MAX_P) {
       spawn_one(S);
       S->acc -= 1.f;
     }
@@ -667,55 +674,189 @@ static void cover_of(float* ox, float* oy, float* cover) {
   *oy = ((float)g_h - sh * c) * 0.5f;
 }
 
+static int g_part_prog;
+static GLuint g_part_vao, g_part_quad, g_part_inst;
+static GLint g_part_view = -1, g_part_samp = -1;
+static int g_part_tried;
+
+static const char* k_part_vs =
+  "#version 330 core\n"
+  "layout(location=0) in vec3 a_Position;\n"
+  "layout(location=1) in vec2 a_TexCoord;\n"
+  "layout(location=2) in vec4 a_Center;\n"
+  "layout(location=3) in vec4 a_Rot;\n"
+  "layout(location=4) in vec3 a_Color;\n"
+  "uniform vec2 g_View;\n"
+  "out vec2 v;\n"
+  "out vec4 v_Tint;\n"
+  "void main(){\n"
+  "  vec2 local = vec2(a_Position.x * a_Center.z, a_Position.y * a_Center.w);\n"
+  "  float c = a_Rot.x, s = a_Rot.y;\n"
+  "  vec2 rot = vec2(local.x * c - local.y * s, local.x * s + local.y * c);\n"
+  "  vec2 px = a_Center.xy + rot;\n"
+  "  gl_Position = vec4(px.x / g_View.x * 2.0 - 1.0, 1.0 - px.y / g_View.y * 2.0, 0.0, 1.0);\n"
+  "  v = a_TexCoord;\n"
+  "  v_Tint = vec4(a_Color, a_Rot.z);\n"
+  "}\n";
+
+static const char* k_part_fs =
+  "#version 330 core\n"
+  "in vec2 v;\n"
+  "in vec4 v_Tint;\n"
+  "uniform sampler2D g_Texture0;\n"
+  "out vec4 fragColor;\n"
+  "void main(){ vec4 c = texture(g_Texture0, v); c.rgb *= v_Tint.rgb; c.a *= v_Tint.a; fragColor = c; }\n";
+
+static void free_part_batch(void) {
+  if (g_part_prog > 0) glDeleteProgram((GLuint)g_part_prog);
+  if (g_part_vao) glDeleteVertexArrays(1, &g_part_vao);
+  if (g_part_quad) glDeleteBuffers(1, &g_part_quad);
+  if (g_part_inst) glDeleteBuffers(1, &g_part_inst);
+  g_part_prog = 0;
+  g_part_vao = g_part_quad = g_part_inst = 0;
+  g_part_view = g_part_samp = -1;
+  g_part_tried = 0;
+}
+
+static int ensure_part_batch(void) {
+  static const float quad[20] = {
+    -1.f, -1.f, 0.f, 0.f, 0.f,
+     1.f, -1.f, 0.f, 1.f, 0.f,
+    -1.f,  1.f, 0.f, 0.f, 1.f,
+     1.f,  1.f, 0.f, 1.f, 1.f
+  };
+  int prog;
+  if (g_part_tried) return g_part_prog > 0;
+  g_part_tried = 1;
+  prog = bw_gl_prog(k_part_vs, k_part_fs);
+  if (prog <= 0) return 0;
+  glGenVertexArrays(1, &g_part_vao);
+  glGenBuffers(1, &g_part_quad);
+  glGenBuffers(1, &g_part_inst);
+  glBindVertexArray(g_part_vao);
+  glBindBuffer(GL_ARRAY_BUFFER, g_part_quad);
+  glBufferData(GL_ARRAY_BUFFER, sizeof quad, quad, GL_STATIC_DRAW);
+  glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * (GLsizei)sizeof(float), (void*)0);
+  glEnableVertexAttribArray(0);
+  glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * (GLsizei)sizeof(float), (void*)(3 * sizeof(float)));
+  glEnableVertexAttribArray(1);
+  glVertexAttribDivisor(0, 0);
+  glVertexAttribDivisor(1, 0);
+  glBindBuffer(GL_ARRAY_BUFFER, g_part_inst);
+  glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(MAX_P * 11 * sizeof(float)), NULL, GL_DYNAMIC_DRAW);
+  glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, 11 * (GLsizei)sizeof(float), (void*)0);
+  glEnableVertexAttribArray(2);
+  glVertexAttribDivisor(2, 1);
+  glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, 11 * (GLsizei)sizeof(float), (void*)(4 * sizeof(float)));
+  glEnableVertexAttribArray(3);
+  glVertexAttribDivisor(3, 1);
+  glVertexAttribPointer(4, 3, GL_FLOAT, GL_FALSE, 11 * (GLsizei)sizeof(float), (void*)(8 * sizeof(float)));
+  glEnableVertexAttribArray(4);
+  glVertexAttribDivisor(4, 1);
+  glBindVertexArray(0);
+  g_part_prog = prog;
+  g_part_view = glGetUniformLocation((GLuint)prog, "g_View");
+  g_part_samp = glGetUniformLocation((GLuint)prog, "g_Texture0");
+  return 1;
+}
+
+static int part_batch_draw(int tex, const float* inst, int n) {
+  if (n < 1 || tex <= 0 || g_part_prog <= 0 || !inst) return 0;
+  glUseProgram((GLuint)g_part_prog);
+  if (g_part_view >= 0) glUniform2f(g_part_view, (float)g_w, (float)g_h);
+  glActiveTexture(GL_TEXTURE0);
+  glBindTexture(GL_TEXTURE_2D, (GLuint)tex);
+  if (g_part_samp >= 0) glUniform1i(g_part_samp, 0);
+  glBindVertexArray(g_part_vao);
+  glBindBuffer(GL_ARRAY_BUFFER, g_part_inst);
+  glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(n * 11 * (int)sizeof(float)), inst, GL_DYNAMIC_DRAW);
+  glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, n);
+  glBindVertexArray(0);
+  return 1;
+}
+
+static void particle_tint(const Sys* S, const Part* p, float* sz, float* a, float* r, float* g, float* b) {
+  float u;
+  *sz = 0.f;
+  *a = 0.f;
+  *r = *g = *b = 1.f;
+  if (!S || !p || p->life <= 0.f) return;
+  u = p->age / p->life;
+  if (u < 0.f) u = 0.f;
+  if (u > 1.f) u = 1.f;
+  if (S->spec.size_b >= 0.f)
+    *sz = p->size * (S->spec.size_a + (S->spec.size_b - S->spec.size_a) * u);
+  else
+    *sz = p->size + S->spec.size_rate * p->age;
+  *a = p->a;
+  if (S->spec.alphafade) {
+    if (S->spec.fade_in > 0.f || S->spec.fade_out > 0.f) {
+      float fin = 1.f, fout = 1.f;
+      if (S->spec.fade_in > 0.f) fin = p->age / S->spec.fade_in;
+      if (S->spec.fade_out > 0.f) fout = (p->life - p->age) / S->spec.fade_out;
+      if (fin < 0.f) fin = 0.f;
+      if (fin > 1.f) fin = 1.f;
+      if (fout < 0.f) fout = 0.f;
+      if (fout > 1.f) fout = 1.f;
+      *a *= fin * fout;
+    } else
+      *a *= 1.f - u;
+  }
+  *r = p->r;
+  *g = p->g;
+  *b = p->b;
+  if (S->spec.color_lerp) {
+    *r = p->r + (S->spec.er - p->r) * u;
+    *g = p->g + (S->spec.eg - p->g) * u;
+    *b = p->b + (S->spec.eb - p->b) * u;
+  }
+}
+
 static void draw_particles(void) {
-  int s, i;
+  int s, i, batch;
   float ox, oy, cover;
   if (g_nsys <= 0 || g_copy_prog <= 0) return;
   cover_of(&ox, &oy, &cover);
+  batch = ensure_part_batch();
   glEnable(GL_BLEND);
   for (s = 0; s < g_nsys; s++) {
     Sys* S = &g_sys[s];
+    float inst[MAX_P * 11];
+    int n = 0;
     if (S->tex <= 0) continue;
     if (S->spec.additive) glBlendFunc(GL_SRC_ALPHA, GL_ONE);
     else glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     for (i = 0; i < S->n; i++) {
       Part* p = &S->p[i];
-      float u, sz, a, r, g, b;
-      if (p->life <= 0.f) continue;
-      u = p->age / p->life;
-      if (u < 0.f) u = 0.f;
-      if (u > 1.f) u = 1.f;
-      if (S->spec.size_b >= 0.f)
-        sz = p->size * (S->spec.size_a + (S->spec.size_b - S->spec.size_a) * u);
-      else
-        sz = p->size + S->spec.size_rate * p->age;
-      a = p->a;
-      if (S->spec.alphafade) {
-        if (S->spec.fade_in > 0.f || S->spec.fade_out > 0.f) {
-          float fin = 1.f, fout = 1.f;
-          if (S->spec.fade_in > 0.f) fin = p->age / S->spec.fade_in;
-          if (S->spec.fade_out > 0.f) fout = (p->life - p->age) / S->spec.fade_out;
-          if (fin < 0.f) fin = 0.f;
-          if (fin > 1.f) fin = 1.f;
-          if (fout < 0.f) fout = 0.f;
-          if (fout > 1.f) fout = 1.f;
-          a *= fin * fout;
-        } else
-          a *= 1.f - u;
-      }
+      float sz, a, r, g, b, rad, c, sn, hx, hy;
+      particle_tint(S, p, &sz, &a, &r, &g, &b);
       if (a <= 0.001f || sz < 0.5f) continue;
-      r = p->r;
-      g = p->g;
-      b = p->b;
-      if (S->spec.color_lerp) {
-        r = p->r + (S->spec.er - p->r) * u;
-        g = p->g + (S->spec.eg - p->g) * u;
-        b = p->b + (S->spec.eb - p->b) * u;
+      if (!batch) {
+        draw_sprite(g_copy_prog, S->tex,
+                    ox + p->x * cover, oy + p->y * cover,
+                    sz * cover, sz * cover, p->ang, a, r, g, b);
+        continue;
       }
-      draw_sprite(g_copy_prog, S->tex,
-                  ox + p->x * cover, oy + p->y * cover,
-                  sz * cover, sz * cover, p->ang, a, r, g, b);
+      if (n >= MAX_P) continue;
+      rad = p->ang * 0.01745329251f;
+      c = cosf(rad);
+      sn = sinf(rad);
+      hx = sz * cover * 0.5f;
+      hy = hx;
+      inst[n * 11 + 0] = ox + p->x * cover;
+      inst[n * 11 + 1] = oy + p->y * cover;
+      inst[n * 11 + 2] = hx;
+      inst[n * 11 + 3] = hy;
+      inst[n * 11 + 4] = c;
+      inst[n * 11 + 5] = sn;
+      inst[n * 11 + 6] = a;
+      inst[n * 11 + 7] = 0.f;
+      inst[n * 11 + 8] = r;
+      inst[n * 11 + 9] = g;
+      inst[n * 11 + 10] = b;
+      n++;
     }
+    if (batch && n > 0) part_batch_draw(S->tex, inst, n);
   }
   glDisable(GL_BLEND);
 }
@@ -802,7 +943,7 @@ static int draw(void) {
   if (g_has_text && g_text_tex > 0) {
     scale = g_h / 90;
     if (scale < 1) scale = 1;
-    if (scale > 8) scale = 8;
+    if (scale > 2) scale = 2;
     draw_quad(g_copy_prog, g_text_tex, 8, 8, g_text_w * scale, g_text_h * scale, 1.f);
   }
   bar_h = g_h / 10;
@@ -865,6 +1006,10 @@ static void reset_plan(void) {
   g_checker = 0;
   g_copy_prog = 0;
   g_fx_prog = 0;
+  g_part_prog = 0;
+  g_part_vao = g_part_quad = g_part_inst = 0;
+  g_part_view = g_part_samp = -1;
+  g_part_tried = 0;
   g_nlive = 0;
   g_nsys = 0;
   g_miss = 0;
@@ -886,6 +1031,7 @@ void bw_play_close(void) {
       free_live_anim(&g_live[i]);
     }
     free_particle_tex();
+    free_part_batch();
     if (g_copy_prog > 0) glDeleteProgram((GLuint)g_copy_prog);
     if (g_fx_prog > 0) glDeleteProgram((GLuint)g_fx_prog);
     bw_gl_shutdown();

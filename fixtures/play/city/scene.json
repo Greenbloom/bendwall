@@ -1,0 +1,7 @@
+{
+  "general": {"orthogonalprojection": {"width": 160, "height": 90}},
+  "objects": [
+    {"name": "bg", "image": "models/bg.json", "origin": "80 45 0", "size": "160 90", "alpha": 1},
+    {"name": "decoy", "image": null}
+  ]
+}

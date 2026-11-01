@@ -120,7 +120,7 @@ int bw_text_rgba(const char* s, int* w, int* h, uint8_t** rgba) {
   if (!s || !w || !h || !rgba) return 0;
   n = (int)strlen(s);
   if (n < 1) return 0;
-  if (n > 64) n = 64;
+  if (n > 160) n = 160;
   *w = n * 6;
   *h = 7;
   stride = *w * 4;

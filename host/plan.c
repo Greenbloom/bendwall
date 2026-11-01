@@ -779,6 +779,33 @@ static int read_image(const uint8_t* b, int n, int* i, int bv, int vol, int fif,
     return 1;
 }
 
+/* A fully transparent TEXS frame is an empty disposal. Sampling a grid
+   keeps a solid frame and drops one that has no ink, so playback does
+   not start on a blank that the effect pass turns into black. */
+static int frame_has_ink(const BwSheet* sheets, int nsheets, const BwFrame* fr) {
+    const BwSheet* sh;
+    int r, c, hits = 0;
+    float x0, x1, y0, y1;
+    if (!sheets || !fr || fr->sheet < 0 || fr->sheet >= nsheets) return 1;
+    sh = &sheets[fr->sheet];
+    if (!sh->rgba || sh->w < 1 || sh->h < 1) return 1;
+    x0 = fr->x;
+    x1 = fr->x + fr->w;
+    y0 = fr->y;
+    y1 = fr->y + fr->h;
+    for (r = 0; r < 6; r++) {
+        for (c = 0; c < 6; c++) {
+            int x = (int)floorf(x0 + ((float)c + 0.5f) / 6.f * (x1 - x0));
+            int y = (int)floorf(y0 + ((float)r + 0.5f) / 6.f * (y1 - y0));
+            if (x < 0 || y < 0 || x >= sh->w || y >= sh->h) continue;
+            hits++;
+            if (sh->rgba[((size_t)y * (size_t)sh->w + (size_t)x) * 4 + 3] > 8) return 1;
+        }
+    }
+    if (!hits) return 1;
+    return 0;
+}
+
 static int parse_texs(const uint8_t* b, int n, int* i, const BwSheet* sheets, int nsheets, BwFrame** out, int* nout) {
     char tag[12];
     int sv, count, k, kept;
@@ -845,6 +872,15 @@ static int parse_texs(const uint8_t* b, int n, int* i, const BwSheet* sheets, in
         one.hx *= sx;
         one.h *= sy;
         fr[kept++] = one;
+    }
+    if (kept > 1) {
+        int wri = 0, fi;
+        for (fi = 0; fi < kept; fi++) {
+            if (!frame_has_ink(sheets, nsheets, &fr[fi])) continue;
+            if (wri != fi) fr[wri] = fr[fi];
+            wri++;
+        }
+        if (wri > 0) kept = wri;
     }
     if (kept < 1) {
         free(fr);
@@ -1220,6 +1256,14 @@ static int raster_ext(const char* s) {
     return ends_with(s, ".png") || ends_with(s, ".jpg") || ends_with(s, ".jpeg") || ends_with(s, ".tex");
 }
 
+/* A material slot often names the source image (.jpg / .png). The compiled
+   file drops that extension and is materials/<path>.tex. */
+static int image_leaf(const char* s) {
+    return ends_with(s, ".png") || ends_with(s, ".jpg") || ends_with(s, ".jpeg")
+        || ends_with(s, ".tga") || ends_with(s, ".gif") || ends_with(s, ".webp")
+        || ends_with(s, ".bmp");
+}
+
 static uint8_t* checker_px(int* w, int* h) {
     enum { N = 32 };
     uint8_t* px = (uint8_t*)malloc(N * N * 4);
@@ -1233,6 +1277,38 @@ static uint8_t* checker_px(int* w, int* h) {
             p[1] = (uint8_t)(on ? 180 : 40);
             p[2] = 36;
             p[3] = 255;
+        }
+    }
+    *w = N;
+    *h = N;
+    return px;
+}
+
+/* Particles never use the checker. A missing name, or a name that does
+   not resolve, is a white radial falloff so the sprite stays soft. */
+static uint8_t* soft_px(int* w, int* h) {
+    enum { N = 32 };
+    uint8_t* px = (uint8_t*)malloc(N * N * 4);
+    int x, y;
+    float cx, cy, rad;
+    if (!px) return NULL;
+    cx = (N - 1) * 0.5f;
+    cy = cx;
+    rad = cx;
+    if (rad < 1.f) rad = 1.f;
+    for (y = 0; y < N; y++) {
+        for (x = 0; x < N; x++) {
+            float dx = ((float)x - cx) / rad;
+            float dy = ((float)y - cy) / rad;
+            float d = sqrtf(dx * dx + dy * dy);
+            float a = 1.f - d;
+            uint8_t* p = px + ((size_t)y * N + (size_t)x) * 4;
+            if (a < 0.f) a = 0.f;
+            a = a * a;
+            p[0] = 255;
+            p[1] = 255;
+            p[2] = 255;
+            p[3] = (uint8_t)(a * 255.f + 0.5f);
         }
     }
     *w = N;
@@ -1410,6 +1486,31 @@ static void copy_cap(char* dst, int cap, const char* src) {
     dst[i] = 0;
 }
 
+static int stem_of(const char* rel, char* out, int cap) {
+    const char* base;
+    const char* dot;
+    int n;
+    if (!rel || !image_leaf(rel) || !out || cap < 2) return 0;
+    copy_cap(out, cap, rel);
+    base = base_of(out);
+    dot = strrchr(base, '.');
+    if (!dot || dot == base) return 0;
+    n = (int)(dot - out);
+    if (n < 1) return 0;
+    out[n] = 0;
+    return 1;
+}
+
+static int push_cand(char cand[][1100], int* nc, int maxc, const char* s) {
+    int i;
+    if (!s || !s[0] || !nc || *nc >= maxc) return 0;
+    for (i = 0; i < *nc; i++)
+        if (strcmp(cand[i], s) == 0) return 0;
+    snprintf(cand[*nc], 1100, "%s", s);
+    (*nc)++;
+    return 1;
+}
+
 static int try_rel(const char* dir, const char* assets, const char* rel, PxGot* g) {
     uint8_t* b = NULL;
     int n = 0, ok;
@@ -1425,49 +1526,71 @@ static int try_rel(const char* dir, const char* assets, const char* rel, PxGot* 
 }
 
 static int load_pixels(const char* dir, const char* assets, const char* rel, PxGot* g, char* why, int why_cap) {
-    char cand[4][1100];
+    char cand[8][1100];
     char lower[1100];
+    char stem[1000];
+    char labeled[1100];
     const char* base;
+    const char* hunt;
     int nc = 0, i, st, bad = 0;
     uint8_t* raw = NULL;
     int n = 0;
     if (g) memset(g, 0, sizeof *g);
     if (why && why_cap > 0) why[0] = 0;
     if (!rel || !rel[0] || !g) return 0;
-    snprintf(cand[nc++], 1100, "%s", rel);
+    push_cand(cand, &nc, 8, rel);
     lower_copy(rel, lower, sizeof lower);
-    if (nc < 4 && strcmp(lower, rel) != 0) snprintf(cand[nc++], 1100, "%s", lower);
+    if (strcmp(lower, rel) != 0) push_cand(cand, &nc, 8, lower);
     base = base_of(rel);
     /* A material slot named "ztyz" is materials/ztyz.tex in the package,
-       then the same path under BENDWALL_ASSETS. */
-    if (nc < 4 && (base == rel || base[0] == 0))
-        snprintf(cand[nc++], 1100, "materials/%s", rel);
-    else if (nc < 4 && strncasecmp(rel, "materials/", 10) != 0)
-        snprintf(cand[nc++], 1100, "materials/%s", base);
+       then the same path under BENDWALL_ASSETS. A slot named
+       particle/halo_4.jpg is materials/particle/halo_4.tex. */
+    if (base == rel || base[0] == 0)
+        snprintf(labeled, sizeof labeled, "materials/%s", rel);
+    else if (strncasecmp(rel, "materials/", 10) != 0)
+        snprintf(labeled, sizeof labeled, "materials/%s", base);
+    else
+        labeled[0] = 0;
+    if (labeled[0]) push_cand(cand, &nc, 8, labeled);
+    if (stem_of(rel, stem, sizeof stem)) {
+        snprintf(labeled, sizeof labeled, "materials/%s", stem);
+        push_cand(cand, &nc, 8, labeled);
+        if (strchr(stem, '/')) push_cand(cand, &nc, 8, stem);
+    }
     for (i = 0; i < nc; i++) {
         st = try_rel(dir, assets, cand[i], g);
-        if (st > 0) return 1;
+        if (st > 0) {
+            if (why && why_cap > 0) why[0] = 0;
+            return 1;
+        }
         if (st < 0) {
             bad = 1;
             if (why && why_cap > 0) copy_cap(why, why_cap, cand[i]);
         }
     }
-    if (!bad && dir && dir[0] && pkg_dir_mode(dir, base[0] ? base : rel, 1, &raw, &n)) {
+    hunt = base[0] ? base : rel;
+    if (stem_of(hunt, stem, sizeof stem)) hunt = base_of(stem);
+    else if (image_leaf(hunt)) {
+        if (stem_of(rel, stem, sizeof stem)) hunt = base_of(stem);
+    }
+    if (!bad && dir && dir[0] && pkg_dir_mode(dir, hunt, 1, &raw, &n)) {
         if (decode_bytes(raw, n, g)) {
             free(raw);
+            if (why && why_cap > 0) why[0] = 0;
             return 1;
         }
         clear_got(g);
         free(raw);
         bad = 1;
         if (why && why_cap > 0) {
-            char labeled[1100];
-            snprintf(labeled, sizeof labeled, "materials/%s.tex", base[0] ? base : rel);
+            snprintf(labeled, sizeof labeled, "materials/%s.tex", hunt);
             copy_cap(why, why_cap, labeled);
         }
     }
     if (why && why_cap > 0 && !why[0]) {
-        if (!strchr(rel, '/') && !raster_ext(rel))
+        if (stem_of(rel, stem, sizeof stem))
+            snprintf(why, (size_t)why_cap, "materials/%s.tex", stem);
+        else if (!strchr(rel, '/') && !raster_ext(rel))
             snprintf(why, (size_t)why_cap, "materials/%s%s", rel, ends_with(rel, ".tex") ? "" : ".tex");
         else
             copy_cap(why, why_cap, rel);
@@ -1500,21 +1623,63 @@ static void add_pixels(BwPlan* plan, const Jv* obj, const char* what, int decode
     push_layer(plan, L);
 }
 
-static int first_texture(const Jv* mat, char* out, int cap) {
-    Jv passes, pass, texs, one;
+static int texture_name(const Jv* one, char* out, int cap) {
+    static const char* keys[] = {"name", "file", "path", "value", "image", "src", "texture", NULL};
+    Jv inner;
+    int i;
+    if (!one || !out || cap < 2) return 0;
+    out[0] = 0;
+    if (one->kind == 1) {
+        if (!j_str(one, out, cap)) return 0;
+    } else if (one->kind == 3) {
+        for (i = 0; keys[i]; i++) {
+            if (!j_obj_get(one, keys[i], &inner)) continue;
+            inner = j_unwrap(&inner);
+            if (inner.kind == 1 && j_str(&inner, out, cap) && out[0]) break;
+        }
+        if (!out[0]) return 0;
+    } else
+        return 0;
+    slash(out);
+    if (!out[0] || strncmp(out, "_rt_", 4) == 0 || strncmp(out, "_alias_", 7) == 0) return 0;
+    return 1;
+}
+
+static int tex_from_value(const Jv* v, char* out, int cap) {
+    Jv one;
     int i, n;
-    if (!j_obj_get(mat, "passes", &passes) || passes.kind != 4) return 0;
-    if (!j_arr_at(&passes, 0, &pass) || pass.kind != 3) return 0;
-    if (!j_obj_get(&pass, "textures", &texs) || texs.kind != 4) return 0;
-    n = j_arr_count(&texs);
+    if (!v) return 0;
+    if (v->kind == 1 || v->kind == 3) return texture_name(v, out, cap);
+    if (v->kind != 4) return 0;
+    n = j_arr_count(v);
     for (i = 0; i < n; i++) {
-        if (!j_arr_at(&texs, i, &one)) break;
-        if (one.kind != 1) continue;
-        if (!j_str(&one, out, cap)) continue;
-        slash(out);
-        if (!out[0] || strncmp(out, "_rt_", 4) == 0) continue;
-        return 1;
+        if (!j_arr_at(v, i, &one)) break;
+        if (texture_name(&one, out, cap)) return 1;
     }
+    return 0;
+}
+
+static int first_texture(const Jv* mat, char* out, int cap) {
+    Jv passes, pass, texs;
+    if (!mat || mat->kind != 3) return 0;
+    if (j_obj_get(mat, "passes", &passes) && passes.kind == 4 && j_arr_at(&passes, 0, &pass) && pass.kind == 3) {
+        if (j_obj_get(&pass, "textures", &texs) && tex_from_value(&texs, out, cap)) return 1;
+        if (j_obj_get(&pass, "usertextures", &texs) && tex_from_value(&texs, out, cap)) return 1;
+    }
+    if (j_obj_get(mat, "usertextures", &texs) && tex_from_value(&texs, out, cap)) return 1;
+    if (j_obj_get(mat, "textures", &texs) && tex_from_value(&texs, out, cap)) return 1;
+    return 0;
+}
+
+/* Scene-object texture override (PKGV0018 instance.textures / usertextures). */
+static int instance_texture(const Jv* obj, char* out, int cap) {
+    Jv inst, texs;
+    if (!obj || obj->kind != 3) return 0;
+    if (j_obj_get(obj, "instance", &inst) && inst.kind == 3) {
+        if (j_obj_get(&inst, "textures", &texs) && tex_from_value(&texs, out, cap)) return 1;
+        if (j_obj_get(&inst, "usertextures", &texs) && tex_from_value(&texs, out, cap)) return 1;
+    }
+    if (j_obj_get(obj, "usertextures", &texs) && tex_from_value(&texs, out, cap)) return 1;
     return 0;
 }
 
@@ -1651,33 +1816,190 @@ static char* load_model_or_material(const char* dir, const char* assets, const c
     return load_json_prefixed(dir, assets, path, "materials/");
 }
 
-static void take_image(BwPlan* plan, const char* dir, const char* assets, const Jv* obj) {
-    Jv im, doc;
-    char path[512], matp[512], tried[1100], why[1100], tex[512];
+#define MAX_PROPS 48
+typedef struct PropTab {
+    char name[MAX_PROPS][64];
+    char value[MAX_PROPS][512];
+    int n;
+} PropTab;
+
+static void prop_put(PropTab* t, const char* name, const Jv* val) {
+    char b[512];
+    Jv u;
+    int i;
+    if (!t || !name || !name[0] || !val) return;
+    u = j_unwrap(val);
+    b[0] = 0;
+    if (u.kind == 1 || u.kind == 2 || u.kind == 5 || u.kind == 6) {
+        if (!j_lit(&u, b, sizeof b)) return;
+    } else if (u.kind == 3) {
+        if (!pull_path(&u, b, sizeof b, 0)) return;
+    } else
+        return;
+    if (!b[0]) return;
+    for (i = 0; i < t->n; i++) {
+        if (!strcasecmp(t->name[i], name)) {
+            copy_cap(t->value[i], (int)sizeof t->value[i], b);
+            return;
+        }
+    }
+    if (t->n >= MAX_PROPS) return;
+    copy_cap(t->name[t->n], (int)sizeof t->name[t->n], name);
+    copy_cap(t->value[t->n], (int)sizeof t->value[t->n], b);
+    t->n++;
+}
+
+static void prop_each(const char* name, const Jv* val, void* ud) {
+    prop_put((PropTab*)ud, name, val);
+}
+
+static void collect_props(PropTab* t, const Jv* root) {
+    Jv gen, props, item, val;
+    int i, c;
+    if (!t || !root || !j_obj_get(root, "general", &gen) || gen.kind != 3) return;
+    if (!j_obj_get(&gen, "properties", &props)) return;
+    if (props.kind == 4) {
+        c = j_arr_count(&props);
+        for (i = 0; i < c; i++) {
+            char name[64];
+            if (!j_arr_at(&props, i, &item) || item.kind != 3) continue;
+            if (!j_field(&item, "name", name, sizeof name)) continue;
+            if (!j_obj_get(&item, "value", &val)) continue;
+            prop_put(t, name, &val);
+        }
+        return;
+    }
+    if (props.kind == 3) j_obj_each(&props, prop_each, t);
+}
+
+static int prop_find(const PropTab* t, const char* name, char* out, int cap) {
+    int i;
+    if (!t || !name || !name[0] || !out || cap < 2) return 0;
+    for (i = 0; i < t->n; i++) {
+        if (!strcasecmp(t->name[i], name)) {
+            copy_cap(out, cap, t->value[i]);
+            return out[0] != 0;
+        }
+    }
+    return 0;
+}
+
+/* prefer: a non-empty project property wins, otherwise the inline value. */
+static int resolve_user(const PropTab* props, const Jv* v, char* out, int cap) {
+    char name[64], prop[512], inl[512];
+    Jv u, inner;
+    if (!v || v->kind != 3 || !out || cap < 2) return 0;
+    if (!j_obj_get(v, "user", &u)) return 0;
+    name[0] = 0;
+    u = j_unwrap(&u);
+    if (u.kind == 1) j_str(&u, name, sizeof name);
+    else if (u.kind == 3) j_field(&u, "name", name, sizeof name);
+    if (!name[0]) return 0;
+    prop[0] = inl[0] = 0;
+    prop_find(props, name, prop, sizeof prop);
+    if (j_obj_get(v, "value", &inner)) {
+        inner = j_unwrap(&inner);
+        if (inner.kind == 1) j_str(&inner, inl, sizeof inl);
+        else if (inner.kind == 3) pull_path(&inner, inl, sizeof inl, 0);
+    }
+    if (prop[0]) {
+        copy_cap(out, cap, prop);
+        return 1;
+    }
+    if (inl[0]) {
+        copy_cap(out, cap, inl);
+        return 1;
+    }
+    return 0;
+}
+
+/* null, false, "", or an object with no picture source. Particle objects
+   often carry "image": null; that is not a layer and must not be a checker. */
+static int image_skipped(const Jv* im) {
+    char b[512];
+    Jv v;
+    if (!im) return 1;
+    if (im->kind == 7 || im->kind == 6) return 1;
+    if (im->kind == 1) return !j_str(im, b, sizeof b) || !b[0];
+    if (im->kind != 3) return 1;
+    if (pull_path(im, b, sizeof b, 0)) return 0;
+    if (j_obj_get(im, "user", &v)) return 0;
+    if (j_obj_get(im, "passes", &v)) return 0;
+    if (j_obj_get(im, "textures", &v)) return 0;
+    if (j_obj_get(im, "material", &v)) {
+        v = j_unwrap(&v);
+        if (v.kind == 3) return 0;
+        if (v.kind == 1 && j_str(&v, b, sizeof b) && b[0]) return 0;
+    }
+    return 1;
+}
+
+static void no_path_label(const Jv* obj, char* out, int cap) {
+    char name[64];
+    name[0] = 0;
+    if (obj) j_field(obj, "name", name, sizeof name);
+    if (name[0])
+        snprintf(out, (size_t)cap, "(no path) name=%s", name);
+    else
+        snprintf(out, (size_t)cap, "(no path)");
+}
+
+static int paint_path(BwPlan* plan, const Jv* obj, const char* dir, const char* assets, const char* path_in) {
+    char path[512], tried[1100], why[1100];
+    char* blob;
+    Jv doc;
+    PxGot g;
+    int st;
+    copy_cap(path, sizeof path, path_in);
+    slash(path);
+    if (!path[0]) return 0;
+    if (raster_ext(path) || image_leaf(path)) {
+        memset(&g, 0, sizeof g);
+        why[0] = 0;
+        st = load_pixels(dir, assets, path, &g, why, (int)sizeof why);
+        /* direct stills cover the framebuffer, which is what the tint fixture draws */
+        paint_got(plan, obj, why[0] ? why : path, st < 0, &g, 0, 0, 0, 1);
+        return 1;
+    }
+    blob = load_model_or_material(dir, assets, path);
+    if (blob && j_doc(blob, &doc) && apply_doc(plan, obj, dir, assets, &doc, path)) {
+        free(blob);
+        return 1;
+    }
+    free(blob);
+    model_tried(path, tried, sizeof tried);
+    memset(&g, 0, sizeof g);
+    paint_got(plan, obj, tried, 0, &g, 0, 0, 0, 1);
+    return 1;
+}
+
+static void take_image(BwPlan* plan, const char* dir, const char* assets, const Jv* obj, const PropTab* props) {
+    Jv im, doc, mat, inner;
+    char path[512], matp[512], tried[1100], why[1100], tex[512], over[512], label[160];
     char* blob = NULL;
     PxGot g;
     int st;
-    plan->image_tried++;
     if (!j_obj_get(obj, "image", &im)) return;
-    if (pull_path(&im, path, sizeof path, 0)) {
-        slash(path);
-        if (raster_ext(path)) {
-            memset(&g, 0, sizeof g);
-            why[0] = 0;
-            st = load_pixels(dir, assets, path, &g, why, (int)sizeof why);
-            /* direct stills cover the framebuffer, which is what the tint fixture draws */
-            paint_got(plan, obj, why[0] ? why : path, st < 0, &g, 0, 0, 0, 1);
-            return;
-        }
-        blob = load_model_or_material(dir, assets, path);
-        if (blob && j_doc(blob, &doc) && apply_doc(plan, obj, dir, assets, &doc, path)) {
-            free(blob);
-            return;
-        }
-        free(blob);
-        model_tried(path, tried, sizeof tried);
+    if (image_skipped(&im)) return;
+    plan->image_tried++;
+    over[0] = 0;
+    if (instance_texture(obj, over, sizeof over) && over[0]) {
+        slash(over);
         memset(&g, 0, sizeof g);
-        paint_got(plan, obj, tried, 0, &g, 0, 0, 0, 1);
+        why[0] = 0;
+        st = load_pixels(dir, assets, over, &g, why, (int)sizeof why);
+        if (st > 0 && g.rgba) {
+            paint_got(plan, obj, why[0] ? why : over, 0, &g, 0, 0, 0, 0);
+            return;
+        }
+        clear_got(&g);
+    }
+    if (resolve_user(props, &im, path, sizeof path) && path[0]) {
+        paint_path(plan, obj, dir, assets, path);
+        return;
+    }
+    if (pull_path(&im, path, sizeof path, 0)) {
+        paint_path(plan, obj, dir, assets, path);
         return;
     }
     if (im.kind == 3 && apply_doc(plan, obj, dir, assets, &im, "")) return;
@@ -1694,6 +2016,14 @@ static void take_image(BwPlan* plan, const char* dir, const char* assets, const 
         paint_got(plan, obj, tried, 0, &g, 0, 0, 0, 1);
         return;
     }
+    if (im.kind == 3 && j_obj_get(&im, "material", &mat)) {
+        mat = j_unwrap(&mat);
+        if (mat.kind == 3 && apply_doc(plan, obj, dir, assets, &mat, "")) return;
+    }
+    if (im.kind == 3 && j_obj_get(&im, "value", &inner)) {
+        inner = j_unwrap(&inner);
+        if (inner.kind == 3 && apply_doc(plan, obj, dir, assets, &inner, "")) return;
+    }
     if (im.kind == 3 && first_texture(&im, tex, sizeof tex)) {
         memset(&g, 0, sizeof g);
         why[0] = 0;
@@ -1701,8 +2031,9 @@ static void take_image(BwPlan* plan, const char* dir, const char* assets, const 
         paint_got(plan, obj, why[0] ? why : tex, st < 0, &g, 0, 0, 0, 0);
         return;
     }
+    no_path_label(obj, label, sizeof label);
     memset(&g, 0, sizeof g);
-    paint_got(plan, obj, "(no path)", 0, &g, 0, 0, 0, 1);
+    paint_got(plan, obj, label, 0, &g, 0, 0, 0, 1);
 }
 
 static int block_named(const Jv* root, const char* section, const char* name, Jv* out) {
@@ -1853,7 +2184,7 @@ static int push_part(BwPlan* plan, BwPartSys sys) {
     return 1;
 }
 
-static void take_particle(BwPlan* plan, const char* dir, const char* assets, const Jv* obj) {
+static void take_particle(BwPlan* plan, const char* dir, const char* assets, const Jv* obj, const PropTab* props) {
     Jv field, doc, em, block, mat;
     BwPartSys sys;
     char path[512], matp[512], tex[512], why[1100], alt[1100];
@@ -1867,8 +2198,10 @@ static void take_particle(BwPlan* plan, const char* dir, const char* assets, con
     if (over_off(obj)) return;
     if (!j_obj_get(obj, "particle", &field)) return;
     if (!pull_path(&field, path, sizeof path, 0) || !path[0]) {
-        fprintf(stderr, "bendwall: particle not found (no path)\n");
-        return;
+        if (!resolve_user(props, &field, path, sizeof path) || !path[0]) {
+            fprintf(stderr, "bendwall: particle not found (no path)\n");
+            return;
+        }
     }
     slash(path);
     blob = load_json_rel(dir, assets, path);
@@ -2098,33 +2431,71 @@ static void take_particle(BwPlan* plan, const char* dir, const char* assets, con
     slash(matp);
     sys.additive = 0;
     tex[0] = 0;
-    if (matp[0]) {
-        matb = load_json_rel(dir, assets, matp);
-        if (!matb) matb = load_json_prefixed(dir, assets, matp, "materials/");
-        if (matb && j_doc(matb, &mat)) {
-            sys.additive = pass_additive(&mat);
-            first_texture(&mat, tex, sizeof tex);
-        } else {
-            fprintf(stderr, "bendwall: particle material not found %s\n", matp);
+    {
+        int mat_ok = 0;
+        if (matp[0]) {
+            matb = load_json_rel(dir, assets, matp);
+            if (!matb) matb = load_json_prefixed(dir, assets, matp, "materials/");
+            if (matb && j_doc(matb, &mat)) {
+                mat_ok = 1;
+                sys.additive = pass_additive(&mat);
+                first_texture(&mat, tex, sizeof tex);
+            } else {
+                fprintf(stderr, "bendwall: particle material not found %s\n", matp);
+            }
         }
+        free(matb);
+        free(blob);
+        blob = NULL;
+        matb = NULL;
+        memset(&g, 0, sizeof g);
+        why[0] = 0;
+        st = 0;
+        {
+            char over[512];
+            char fail[1100];
+            int got = 0, named_fail = 0;
+            over[0] = fail[0] = 0;
+            if (instance_texture(obj, over, sizeof over) && over[0]) {
+                slash(over);
+                st = load_picture(dir, assets, over, &g, why, (int)sizeof why);
+                if (st > 0 && g.rgba) got = 1;
+                else {
+                    named_fail = 1;
+                    copy_cap(fail, sizeof fail, why[0] ? why : over);
+                    clear_got(&g);
+                }
+            }
+            if (!got && tex[0]) {
+                why[0] = 0;
+                st = load_picture(dir, assets, tex, &g, why, (int)sizeof why);
+                if (st > 0 && g.rgba) got = 1;
+                else {
+                    named_fail = 1;
+                    if (!fail[0]) copy_cap(fail, sizeof fail, why[0] ? why : tex);
+                    clear_got(&g);
+                }
+            }
+            if (!got && !tex[0] && !over[0] && matp[0] && !mat_ok) {
+                named_fail = 1;
+                copy_cap(fail, sizeof fail, matp);
+            }
+            if (got) {
+                sys.rgba = g.rgba;
+                sys.tw = g.w;
+                sys.th = g.h;
+                g.rgba = NULL;
+            } else if (named_fail) {
+                miss_log(fail[0] ? fail : (tex[0] ? tex : matp), st < 0);
+                plan->missing++;
+                sys.rgba = soft_px(&sys.tw, &sys.th);
+            } else {
+                miss_log("(no path)", 0);
+                sys.rgba = soft_px(&sys.tw, &sys.th);
+            }
+        }
+        clear_got(&g);
     }
-    free(matb);
-    free(blob);
-    memset(&g, 0, sizeof g);
-    why[0] = 0;
-    st = 0;
-    if (tex[0]) st = load_picture(dir, assets, tex, &g, why, (int)sizeof why);
-    if (st > 0 && g.rgba) {
-        sys.rgba = g.rgba;
-        sys.tw = g.w;
-        sys.th = g.h;
-        g.rgba = NULL;
-    } else {
-        miss_log(why[0] ? why : (tex[0] ? tex : matp), st < 0);
-        plan->missing++;
-        sys.rgba = checker_px(&sys.tw, &sys.th);
-    }
-    clear_got(&g);
     if (!sys.rgba) return;
     push_part(plan, sys);
 }
@@ -2132,7 +2503,7 @@ static void take_particle(BwPlan* plan, const char* dir, const char* assets, con
 static void take_text(BwPlan* plan, const Jv* obj) {
     Jv t, inner;
     char value[160];
-    if (plan->has_text) return;
+    size_t n;
     if (!j_obj_get(obj, "text", &t)) return;
     if (t.kind == 1) {
         if (!j_str(&t, value, sizeof value) || !value[0]) return;
@@ -2142,11 +2513,20 @@ static void take_text(BwPlan* plan, const Jv* obj) {
         if (!j_lit(&inner, value, sizeof value) || !value[0]) return;
     } else
         return;
-    snprintf(plan->text, sizeof plan->text, "%s", value);
+    if (!plan->text[0])
+        snprintf(plan->text, sizeof plan->text, "%s", value);
+    else {
+        n = strlen(plan->text);
+        if (n + 2 < sizeof plan->text) {
+            plan->text[n++] = ' ';
+            plan->text[n] = 0;
+            snprintf(plan->text + n, sizeof plan->text - n, "%s", value);
+        }
+    }
     plan->has_text = 1;
 }
 
-static void walk_scene(BwPlan* plan, const char* dir, const char* assets, const char* scene) {
+static void walk_scene(BwPlan* plan, const char* dir, const char* assets, const char* scene, const PropTab* props) {
     Jv root, gen, ortho;
     int i, n, present = 0;
     if (!j_doc(scene, &root)) return;
@@ -2163,8 +2543,8 @@ static void walk_scene(BwPlan* plan, const char* dir, const char* assets, const 
             if (!j_arr_at(&gen, i, &obj) || obj.kind != 3) continue;
             if (!visible_obj(&obj)) continue;
             take_text(plan, &obj);
-            if (j_obj_get(&obj, "image", &ortho)) take_image(plan, dir, assets, &obj);
-            if (j_obj_get(&obj, "particle", &ortho)) take_particle(plan, dir, assets, &obj);
+            if (j_obj_get(&obj, "image", &ortho)) take_image(plan, dir, assets, &obj, props);
+            if (j_obj_get(&obj, "particle", &ortho)) take_particle(plan, dir, assets, &obj, props);
         }
     }
 }
@@ -2280,7 +2660,9 @@ int bw_plan_load(const char* dir, const char* assets, BwPlan* out) {
     int n = 0;
     char path[1100], type[32], file[512], title[160];
     Jv root, v;
+    PropTab props;
     memset(out, 0, sizeof *out);
+    memset(&props, 0, sizeof props);
     out->video_volume = 1.f;
     snprintf(out->kind, sizeof out->kind, "scene");
     if (!dir || !dir[0]) {
@@ -2300,12 +2682,14 @@ int bw_plan_load(const char* dir, const char* assets, BwPlan* out) {
         if (j_obj_get(&root, "title", &v)) j_str(&v, title, sizeof title);
         slash(file);
         take_project_audio(out, &root);
+        collect_props(&props, &root);
     }
     free(proj);
     snprintf(out->type, sizeof out->type, "%s", type);
     snprintf(out->file, sizeof out->file, "%s", file);
     snprintf(out->title, sizeof out->title, "%s", title);
-    if (title[0] && !out->text[0]) snprintf(out->text, sizeof out->text, "%s", title);
+    /* The project title is metadata. It is not drawn on the wallpaper
+       or in --watch. Scene text objects still are. */
     if (!strcmp(type, "web")) {
         snprintf(out->kind, sizeof out->kind, "web");
         join_file(out->page, (int)sizeof out->page, dir, file);
@@ -2318,9 +2702,8 @@ int bw_plan_load(const char* dir, const char* assets, BwPlan* out) {
     }
     snprintf(out->kind, sizeof out->kind, "scene");
     if (!load_scene(dir, assets, file, &scene)) return 1;
-    walk_scene(out, dir, assets, scene);
+    walk_scene(out, dir, assets, scene, &props);
     free(scene);
-    if (!out->has_text && title[0]) snprintf(out->text, sizeof out->text, "%s", title);
     return 1;
 }
 

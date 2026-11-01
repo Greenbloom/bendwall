@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 static int center(int* r, int* g, int* b, int* a) {
@@ -565,6 +566,189 @@ int main(int argc, char** argv) {
     if (saved[0]) setenv("BENDWALL_ASSETS", saved, 1);
     else unsetenv("BENDWALL_ASSETS");
   }
+
+  {
+    const char* old_assets = getenv("BENDWALL_ASSETS");
+    char saved[1100];
+    int hr = 0, hg = 0, hb = 0, ar = 0, ag = 0, ab = 0;
+    saved[0] = 0;
+    if (old_assets) snprintf(saved, sizeof saved, "%s", old_assets);
+    snprintf(path, sizeof path, "%s/halo-assets", root);
+    setenv("BENDWALL_ASSETS", path, 1);
+    snprintf(path, sizeof path, "%s/halo", root);
+    if (!bw_play_open(path, 160, 90)) {
+      fprintf(stderr, "open halo failed\n%s\n", bw_play_line());
+      return 1;
+    }
+    if (!bw_play_step(1000)) return 1;
+    if (!at(24, 45, &hr, &hg, &hb) || !at(94, 45, &ar, &ag, &ab)) return 1;
+    printf("HALO home=%d %d %d away=%d %d %d\n", hr, hg, hb, ar, ag, ab);
+    if (hr > 40 || hg > 40 || hb > 50) bad = 1;
+    if (ar < 220 || ag < 160 || ab > 40) bad = 1;
+    bw_play_close();
+    if (saved[0]) setenv("BENDWALL_ASSETS", saved, 1);
+    else unsetenv("BENDWALL_ASSETS");
+  }
+
+  bw_play_audio(NULL, 0);
+  snprintf(path, sizeof path, "%s/softpart", root);
+  if (!bw_play_open(path, 160, 90)) {
+    fprintf(stderr, "open softpart failed\n%s\n", bw_play_line());
+    return 1;
+  }
+  if (!bw_play_step(50)) return 1;
+  {
+    int sr = 0, sg = 0, sb = 0;
+    const char* line = bw_play_line();
+    const char* miss = line ? strstr(line, "miss=") : NULL;
+    int nmiss = miss ? atoi(miss + 5) : -1;
+    if (!at(80, 45, &sr, &sg, &sb)) return 1;
+    printf("SOFT %d %d %d miss=%d\n", sr, sg, sb, nmiss);
+    if (sr < 200 || sg < 200 || sb < 200 || nmiss != 0) bad = 1;
+  }
+  bw_play_close();
+
+  bw_play_audio(NULL, 0);
+  snprintf(path, sizeof path, "%s/nope", root);
+  if (!bw_play_open(path, 160, 90)) {
+    fprintf(stderr, "open nope failed\n%s\n", bw_play_line());
+    return 1;
+  }
+  if (!bw_play_step(50)) return 1;
+  {
+    int sr = 0, sg = 0, sb = 0;
+    const char* line = bw_play_line();
+    const char* miss = line ? strstr(line, "miss=") : NULL;
+    int nmiss = miss ? atoi(miss + 5) : 0;
+    if (!at(80, 45, &sr, &sg, &sb)) return 1;
+    printf("NOPE %d %d %d miss=%d\n", sr, sg, sb, nmiss);
+    if (sr < 200 || sg < 200 || sb < 200 || nmiss < 1) bad = 1;
+  }
+  bw_play_close();
+
+  bw_play_audio(NULL, 0);
+  snprintf(path, sizeof path, "%s/city", root);
+  if (!bw_play_open(path, 160, 90)) {
+    fprintf(stderr, "open city failed\n%s\n", bw_play_line());
+    return 1;
+  }
+  {
+    int cr = 0, cg = 0, cb = 0;
+    if (!at(80, 45, &cr, &cg, &cb)) return 1;
+    printf("CITY %d %d %d\n", cr, cg, cb);
+    if (cr > 40 || cg < 50 || cb < 200) bad = 1;
+  }
+  bw_play_close();
+
+  bw_play_audio(NULL, 0);
+  snprintf(path, sizeof path, "%s/userpic", root);
+  if (!bw_play_open(path, 160, 90)) {
+    fprintf(stderr, "open userpic failed\n%s\n", bw_play_line());
+    return 1;
+  }
+  {
+    int ur = 0, ug = 0, ub = 0;
+    if (!at(80, 45, &ur, &ug, &ub)) return 1;
+    printf("USER %d %d %d\n", ur, ug, ub);
+    if (ur > 40 || ug < 160 || ub > 100) bad = 1;
+  }
+  bw_play_close();
+
+  bw_play_audio(NULL, 0);
+  snprintf(path, sizeof path, "%s/instpic", root);
+  if (!bw_play_open(path, 160, 90)) {
+    fprintf(stderr, "open instpic failed\n%s\n", bw_play_line());
+    return 1;
+  }
+  {
+    int ir = 0, ig = 0, ib = 0;
+    if (!at(80, 45, &ir, &ig, &ib)) return 1;
+    printf("INST %d %d %d\n", ir, ig, ib);
+    if (ir > 40 || ig < 160 || ib > 100) bad = 1;
+  }
+  bw_play_close();
+
+  bw_play_audio(NULL, 0);
+  snprintf(path, sizeof path, "%s/titled", root);
+  if (!bw_play_open(path, 160, 90)) {
+    fprintf(stderr, "open titled failed\n%s\n", bw_play_line());
+    return 1;
+  }
+  {
+    int tw = white_count();
+    printf("TITLE white=%d\n", tw);
+    if (tw >= 8) bad = 1;
+  }
+  bw_play_close();
+
+  bw_play_audio(NULL, 0);
+  snprintf(path, sizeof path, "%s/blankgif", root);
+  if (!bw_play_open(path, 160, 90)) {
+    fprintf(stderr, "open blankgif failed\n%s\n", bw_play_line());
+    return 1;
+  }
+  {
+    int br = 0, bg = 0, bb = 0;
+    if (!at(80, 45, &br, &bg, &bb)) return 1;
+    printf("BLANK %d %d %d\n", br, bg, bb);
+    if (br < 200 || bg > 40 || bb > 40) bad = 1;
+  }
+  bw_play_close();
+
+  bw_play_audio(NULL, 0);
+  snprintf(path, sizeof path, "%s/swarm", root);
+  if (!bw_play_open(path, 640, 360)) {
+    fprintf(stderr, "open swarm failed\n%s\n", bw_play_line());
+    return 1;
+  }
+  if (!bw_play_step(33) || !bw_play_step(33)) return 1;
+  {
+    struct timespec t0, t1;
+    long ticks0, ticks1, clk;
+    double cpu, wall;
+    int i, alive = 0;
+    const char* line;
+    const char* ap;
+    FILE* stf;
+    char buf[1024];
+    char* rp;
+    unsigned long ut = 0, stm = 0;
+    ticks0 = 0;
+    stf = fopen("/proc/self/stat", "r");
+    if (stf && fgets(buf, sizeof buf, stf)) {
+      rp = strrchr(buf, ')');
+      if (rp && sscanf(rp + 1, " %*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %lu %lu", &ut, &stm) == 2)
+        ticks0 = (long)(ut + stm);
+    }
+    if (stf) fclose(stf);
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    for (i = 0; i < 30; i++) {
+      if (!bw_play_step(33)) return 1;
+    }
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    ut = stm = 0;
+    ticks1 = ticks0;
+    stf = fopen("/proc/self/stat", "r");
+    if (stf && fgets(buf, sizeof buf, stf)) {
+      rp = strrchr(buf, ')');
+      if (rp && sscanf(rp + 1, " %*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %lu %lu", &ut, &stm) == 2)
+        ticks1 = (long)(ut + stm);
+    }
+    if (stf) fclose(stf);
+    clk = sysconf(_SC_CLK_TCK);
+    if (clk < 1) clk = 100;
+    wall = (double)(t1.tv_sec - t0.tv_sec) + (double)(t1.tv_nsec - t0.tv_nsec) / 1e9;
+    /* Percent of one core against a 30 fps budget, not against a tight loop. */
+    cpu = (clk > 0) ? ((double)(ticks1 - ticks0) / (double)clk) / (30.0 * 0.033) * 100.0 : 0.0;
+    line = bw_play_line();
+    ap = line ? strstr(line, "alive=") : NULL;
+    alive = ap ? atoi(ap + 6) : 0;
+    printf("SWARM cpu=%.1f alive=%d wall=%.3f\n", cpu, alive, wall);
+    if (alive < 500 || alive > 640) bad = 1;
+    if (cpu >= 30.0) bad = 1;
+    (void)wall;
+  }
+  bw_play_close();
 
   {
     float buf[4096];

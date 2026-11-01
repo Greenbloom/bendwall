@@ -154,7 +154,9 @@ def main():
   "type": "video"
 }
 """)
-    oriented_clip(os.path.join(PLAY, "nested", "clip.mkv"))
+    clip = os.path.join(PLAY, "nested", "clip.mkv")
+    if not os.path.exists(clip):
+        oriented_clip(clip)
     write(os.path.join(PLAY, "dxt.tex"), tex(
         fmt=4, tw=4, th=4, iw=4, ih=4, bv=2,
         images=[[mip(4, 4, DXT5_GREEN)]],

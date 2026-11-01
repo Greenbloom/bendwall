@@ -1,0 +1,10 @@
+{
+  "objects": [
+    {"name": "bg", "image": "models/bg.json", "effects": [
+      {"file": "effects/scroll/effect.json"},
+      {"file": "effects/spin/effect.json"},
+      {"file": "effects/opacity/effect.json"},
+      {"file": "effects/colorkey/effect.json"}
+    ]}
+  ]
+}

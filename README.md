@@ -28,9 +28,11 @@ Video: libav decodes a chosen frame and uploads it as a GL texture. A synthetic 
 
 Web: `host/webshim.js` implements `wallpaperPropertyListener.applyUserProperties` and `wallpaperRegisterAudioListener` (128 floats, left then right). Proven with `qjs`. The Plasma package loads `WebLayer.qml` when `wallpaperKind` is `web`: a `WebEngineView` injects the shim at document creation and calls `bendwallApplyProperties` plus `bendwallPushAudio` on load and every 33 ms. The offscreen harness does not import Qt WebEngine. This image has no Qt WebEngine module, so the QML is checked as source. A web item is `loaded`.
 
-Packed scenes: `scene.pkg` and `gifscene.pkg` are read by the same pkg table as loose files. A missing relative path is then read from `BENDWALL_ASSETS`. A project with an empty `type` and a dependency is a preset and follows that base item once. The headless 32×32 frame still matches when the scene and the tex files come from `scene.pkg` and the material and shaders come only from the assets directory.
+Packed scenes: `scene.pkg` and `gifscene.pkg` are read by the same pkg table as loose files. Offsets are relative to the first byte after the table, so `scene.json` does not have to be the first entry. A package larger than the 2MB read still returns that member: bytes inside the read are sliced, and a member past the read is loaded at its file offset. A missing relative path is then read from `BENDWALL_ASSETS`. A project with an empty `type` and a dependency is a preset and follows that base item once. The headless 32×32 frame still matches when the scene and the tex files come from `scene.pkg` and the material and shaders come only from the assets directory.
 
 Text layers rasterize with a 5×7 bitmap into a GL texture. Models stay `partial model`: the `.mdl` container was not decoded.
+
+`scroll`, `spin`, `opacity`, and `colorkey` are built-in passes. Scroll wraps the texture by half a width, spin turns it 180 degrees, opacity halves alpha, and colorkey drops near-red texels. Other effect names are still listed on the probe line.
 
 Workshop probe, from the synthetic tree:
 
@@ -50,9 +52,13 @@ Workshop probe, from the synthetic tree:
 23 partial particle effect:tint effect:pulse
 24 loaded
 26 loaded
+30 loaded
+31 loaded
+32 loaded
+33 loaded
 ```
 
-`loaded` means the item can run: an image scene, a packed scene, a preset of one, a web page, or a video that decodes. `partial` names the object and effect types the probe still reports (`particle`, `model`, `sound`, `light`, and each `effects/<name>/`). `unsupported` names what blocks playback (`application`, a missing preset dependency, a missing scene, a video that does not decode). Item 22 is a typeless preset of the web item 13. Item 24 is a scene file that exists only under the assets folder. Item 26 is a text layer.
+`loaded` means the item can run: an image scene, a packed scene, a preset of one, a web page, or a video that decodes. `partial` names the object and effect types the probe still reports (`particle`, `model`, `sound`, `light`, and each `effects/<name>/`). `unsupported` names what blocks playback (`application`, a missing preset dependency, a missing scene, a video that does not decode). Item 22 is a typeless preset of the web item 13. Item 24 is a scene file that exists only under the assets folder. Item 26 is a text layer. Items 30–32 are the three packed layouts (`scene.json` not first, `gifscene.json`, `PKGV0006`). Item 33 names the four built-in effect passes.
 
 ## Bend and the host
 
@@ -154,7 +160,7 @@ build/kde/bendwall-preview --dump-workshop "$BENDWALL_WORKSHOP"
 
 ## Still open
 
-- The scene pass draws image layers, sprite frames, and an effect chain, and it uploads `g_AudioSpectrum` as four floats. It does not yet place the text texture or a video frame into that pass. Text is a bitmap upload (not MSDF, outline, or wrapping). A video wallpaper's frames are GL textures; the Plasma image item still shows the PNG the Bend process wrote.
+- The scene pass draws image layers, sprite frames, and an effect chain, and it uploads `g_AudioSpectrum` as four floats. `scroll`, `spin`, `opacity`, and `colorkey` run as their own fullscreen passes. The image pass does not yet place the text texture or a video frame into that same picture. Text is a bitmap upload (not MSDF, outline, or wrapping). A video wallpaper's frames are GL textures; the Plasma image item still shows the PNG the Bend process wrote.
 - `.mdl` models (`MDLV0023` / `MDLS0004` / `MDLA0006`) are not decoded, so a model object stays `partial model`.
 - Particle operators beyond movement, alphafade, sizechange, angularmovement, and colorchange (turbulence, trails) are not simulated.
 - The four GL bands are not yet the Pulse capture. The web listener is the full 128 floats, and it is zeros unless the host sets `wallpaperAudio`.

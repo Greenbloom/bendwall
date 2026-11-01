@@ -484,7 +484,101 @@ def commit.m(acc: String, name: String, e: Bool) -> String:
     case True{}:
       acc
     case False{}:
+      commit.n(acc, pair(name))
+
+# scroll, spin, opacity and colorkey have passes in src/fx.bend.
+@unsafe
+def known(name: String) -> Bool:
+  known.scroll(pair(name))
+
+@unsafe
+def known.yes(name: String) -> Bool:
+  match name:
+    case SNil{}:
+      True{}
+    case SCon{_, t}:
+      known.yes(t)
+
+@unsafe
+def known.no(name: String) -> Bool:
+  match name:
+    case SNil{}:
+      False{}
+    case SCon{_, t}:
+      known.no(t)
+
+@unsafe
+def known.scroll(p: String & String) -> Bool:
+  (a, b) = p
+  known.spin(b, String.eq(a, "scroll"))
+
+@unsafe
+def known.spin(name: String, hit: Bool) -> Bool:
+  match hit:
+    case True{}:
+      known.yes(name)
+    case False{}:
+      known.spin2(pair(name))
+
+@unsafe
+def known.spin2(p: String & String) -> Bool:
+  (a, b) = p
+  known.op(b, String.eq(a, "spin"))
+
+@unsafe
+def known.op(name: String, hit: Bool) -> Bool:
+  match hit:
+    case True{}:
+      known.yes(name)
+    case False{}:
+      known.op2(pair(name))
+
+@unsafe
+def known.op2(p: String & String) -> Bool:
+  (a, b) = p
+  known.ck(b, String.eq(a, "opacity"))
+
+@unsafe
+def known.ck(name: String, hit: Bool) -> Bool:
+  match hit:
+    case True{}:
+      known.yes(name)
+    case False{}:
+      known.ck2(pair(name))
+
+@unsafe
+def known.ck2(p: String & String) -> Bool:
+  (a, b) = p
+  known.ck3(b, String.eq(a, "colorkey"))
+
+@unsafe
+def known.ck3(name: String, hit: Bool) -> Bool:
+  match hit:
+    case True{}:
+      known.yes(name)
+    case False{}:
+      known.no(name)
+
+@unsafe
+def commit.n(acc: String, p: String & String) -> String:
+  (a, b) = p
+  commit.k(acc, b, known(a))
+
+@unsafe
+def commit.k(acc: String, name: String, hit: Bool) -> String:
+  match hit:
+    case True{}:
+      commit.drop(acc, name)
+    case False{}:
       add_new(acc, "effect:" ++ name)
+
+@unsafe
+def commit.drop(acc: String, name: String) -> String:
+  match name:
+    case SNil{}:
+      acc
+    case SCon{_, t}:
+      commit.drop(acc, t)
 
 @unsafe
 def end_name(+c: U32) -> Bool:

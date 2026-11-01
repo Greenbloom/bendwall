@@ -4,7 +4,9 @@ import ./str.bend as S
 
 # Scene and asset lookup. A loose file wins, then <basename>.pkg (scene.pkg,
 # gifscene.pkg), then BENDWALL_ASSETS. Pkg names are matched case-insensitively.
-# Bend has no random-access file effect, so the member is sliced from the byte list.
+# Offsets are relative to the byte after the entry table. A read is capped at
+# 2000000 bytes, so a later .tex must not blank out an earlier scene.json:
+# a member that sits in the cap is sliced, and one past it is read at its offset.
 
 type Got is Data:
   Got{ok: U32, bs: List<&2, U32>}
@@ -233,9 +235,80 @@ def member_bad(bs: List<&2, U32>, +at: U32, +size: U32, bad: Bool) -> Got:
     case False{}:
       Got{1, take_at(bs, at, size)}
 
+# mode 0: no such member. mode 1: the bytes are in `bs`. mode 2: `at`/`size`
+# are absolute, but those bytes were past the bytes we held.
+type Spot is Data:
+  Spot{mode: U32, at: U32, size: U32, bs: List<&2, U32>}
+
+@unsafe
+def measure(xs: List<&2, U32>, acc: List<&2, U32>, +n: U32) -> List<&2, U32> & U32:
+  match xs:
+    case Nil{}:
+      (revbs(acc), n)
+    case Con{h, t}:
+      measure(t, Con{h, acc}, (n + 1 : U32))
+
+@unsafe
+def member_full(xs: List<&2, U32>, +at: U32, +size: U32) -> Spot:
+  member_full.r(measure(xs, Nil{}, 0), at, size)
+
+@unsafe
+def member_full.r(p: List<&2, U32> & U32, +at: U32, +size: U32) -> Spot:
+  (xs, n) = p
+  member_full.e(xs, at, size, U32.is_eq(n, size))
+
+@unsafe
+def member_full.e(xs: List<&2, U32>, +at: U32, +size: U32, eq: Bool) -> Spot:
+  match eq:
+    case True{}:
+      Spot{1, at, size, xs}
+    case False{}:
+      member_full.miss(xs, at, size)
+
+@unsafe
+def member_full.miss(xs: List<&2, U32>, +at: U32, +size: U32) -> Spot:
+  member_full.missn(at, size, drop_all(xs))
+
+@unsafe
+def member_full.missn(+at: U32, +size: U32, +n: U32) -> Spot:
+  Spot{2, at, size, Nil{}}
+
+@unsafe
+def member_none(bs: List<&2, U32>) -> Spot:
+  member_none.n(drop_all(bs))
+
+@unsafe
+def member_none.n(+n: U32) -> Spot:
+  Spot{0, 0, 0, Nil{}}
+
+@unsafe
+def member_pick(bs: List<&2, U32>, +at: U32, +size: U32, +ok: U32) -> Spot:
+  member_pick.m(bs, at, size, U32.is_zero(ok))
+
+@unsafe
+def member_pick.m(bs: List<&2, U32>, +at: U32, +size: U32, miss: Bool) -> Spot:
+  match miss:
+    case True{}:
+      member_none(bs)
+    case False{}:
+      member_full(take_at(bs, at, size), at, size)
+
 @unsafe
 def member_ok(bs: List<&2, U32>, +start: U32, +off: U32, +size: U32, +err: U32, +ok: U32) -> Got:
-  member_bad(bs, (start + off : U32), size, Bool.or(U32.is_ne(err, 0), U32.is_zero(ok)))
+  member_ok.s(member_pick(bs, (start + off : U32), size, ok))
+
+@unsafe
+def member_ok.s(s: Spot) -> Got:
+  Spot{mode, at, size, bs} = s
+  member_ok.m(bs, U32.is_eq(mode, 1))
+
+@unsafe
+def member_ok.m(bs: List<&2, U32>, have: Bool) -> Got:
+  match have:
+    case True{}:
+      Got{1, bs}
+    case False{}:
+      miss_got(bs)
 
 @unsafe
 def member_h(bs: List<&2, U32>, +start: U32, +err: U32, h: Pkg.Hit) -> Got:
@@ -254,7 +327,122 @@ def member_d(name: String, p: List<&2, U32> & List<&2, U32>) -> Got:
 
 @unsafe
 def member_got(bs: List<&2, U32>, name: String) -> Got:
-  member_d(name, dupbs(bs))
+  member_ok.s(spot(bs, name))
+
+@unsafe
+def spot(bs: List<&2, U32>, name: String) -> Spot:
+  spot.d(name, dupbs(bs))
+
+@unsafe
+def spot.d(name: String, p: List<&2, U32> & List<&2, U32>) -> Spot:
+  (a, b) = p
+  spot.p(b, S.lower_str(name), Pkg.parse(a))
+
+@unsafe
+def spot.p(bs: List<&2, U32>, name: String, p: Pkg.Pkg) -> Spot:
+  Pkg.Pkg{ver, start, entries, err} = p
+  spot.h(bs, start, err, Pkg.find(name, entries))
+
+@unsafe
+def spot.h(bs: List<&2, U32>, +start: U32, +err: U32, h: Pkg.Hit) -> Spot:
+  Pkg.Hit{ok, off, size} = h
+  member_pick(bs, (start + off : U32), size, ok)
+
+@unsafe
+def fetch(path: String, name: String) -> IO(Got):
+  fetch.p(pair(path), name)
+
+@unsafe
+def fetch.p(ps: String & String, name: String) -> IO(Got):
+  (p1, p2) = ps
+  do IO<Got>:
+    bs : List<&2, U32> <- read_bin(p1)
+    g : Got <- fetch.s(p2, spot(bs, name))
+    return g
+
+@unsafe
+def fetch.s(path: String, s: Spot) -> IO(Got):
+  Spot{+mode, at, size, bs} = s
+  fetch.z(path, at, size, bs, mode, U32.is_zero(mode))
+
+@unsafe
+def fetch.z(path: String, +at: U32, +size: U32, bs: List<&2, U32>, +mode: U32, miss: Bool) -> IO(Got):
+  match miss:
+    case True{}:
+      do IO<Got>:
+        return miss_got(bs)
+    case False{}:
+      fetch.h(path, at, size, bs, U32.is_eq(mode, 1))
+
+@unsafe
+def fetch.h(path: String, +at: U32, +size: U32, bs: List<&2, U32>, have: Bool) -> IO(Got):
+  match have:
+    case True{}:
+      do IO<Got>:
+        return Got{1, bs}
+    case False{}:
+      fetch.disk(path, at, size, bs)
+
+@unsafe
+def fetch.disk(path: String, +at: U32, +size: U32, bs: List<&2, U32>) -> IO(Got):
+  fetch.cap(path, at, size, drop_all(bs), U32.is_gt(size, 2000000))
+
+@unsafe
+def fetch.cap(path: String, +at: U32, +size: U32, +gone: U32, huge: Bool) -> IO(Got):
+  match huge:
+    case True{}:
+      do IO<Got>:
+        return Got{0, Nil{}}
+    case False{}:
+      read_at_got(path, at, size)
+
+@unsafe
+def read_at_got(path: String, +at: U32, +size: U32) -> IO(Got):
+  do IO<Got>:
+    r : Result<&1, &1, U32 & String, File> <- File.open(path, "r")
+    g : Got <- read_at_open(r, at, size)
+    return g
+
+@unsafe
+def read_at_open(r: Result<&1, &1, U32 & String, File>, +at: U32, +size: U32) -> IO(Got):
+  match r:
+    case Fail{_}:
+      do IO<Got>:
+        return Got{0, Nil{}}
+    case Done{f}:
+      read_at_file(f, at, size)
+
+@unsafe
+def read_at_file(f: File, +at: U32, +size: U32) -> IO(Got):
+  do IO<Got>:
+    m : File & Result<&1, &1, U32 & String, List<&2, U32>> <- File.read_at(f, at, size)
+    g : Got <- read_at_unwrap(m, size)
+    return g
+
+@unsafe
+def read_at_unwrap(m: File & Result<&1, &1, U32 & String, List<&2, U32>>, +size: U32) -> IO(Got):
+  (f, r) = m
+  do IO<Got>:
+    xs : List<&2, U32> <- IO.pass(List<&2, U32>, r)
+    u : Unit <- File.close(f)
+    return read_at_full(xs, size)
+
+@unsafe
+def read_at_full(xs: List<&2, U32>, +size: U32) -> Got:
+  read_at_full.r(measure(xs, Nil{}, 0), size)
+
+@unsafe
+def read_at_full.r(p: List<&2, U32> & U32, +size: U32) -> Got:
+  (xs, n) = p
+  read_at_full.e(xs, U32.is_eq(n, size))
+
+@unsafe
+def read_at_full.e(xs: List<&2, U32>, eq: Bool) -> Got:
+  match eq:
+    case True{}:
+      Got{1, xs}
+    case False{}:
+      miss_got(xs)
 
 @unsafe
 def got_text.m(bs: List<&2, U32>, miss: Bool) -> String:
@@ -481,8 +669,8 @@ def scene_pkg.read3(+gone: U32, assets: String, rs: String & String, d1: String)
 def scene_pkg.read4(assets: String, d1: String, pkg: String, ns: String & String) -> IO(String):
   (n1, n2) = ns
   do IO<String>:
-    bs : List<&2, U32> <- read_bin(d1 ++ "/" ++ pkg)
-    s : String <- scene_pkg.mem(assets, n2, member_got(bs, n1))
+    g : Got <- fetch(d1 ++ "/" ++ pkg, n1)
+    s : String <- scene_pkg.mem(assets, n2, g)
     return s
 
 @unsafe
@@ -613,8 +801,8 @@ def load_pkg.read2(assets: String, rel: String, ds: String & String, pkg: String
 def load_pkg.read3(+gone: U32, assets: String, pkg: String, d1: String, ns: String & String) -> IO(Got):
   (n1, n2) = ns
   do IO<Got>:
-    bs : List<&2, U32> <- read_bin(d1 ++ "/" ++ pkg)
-    g : Got <- load_pkg.mem(assets, n2, member_got(bs, n1))
+    g0 : Got <- fetch(d1 ++ "/" ++ pkg, n1)
+    g : Got <- load_pkg.mem(assets, n2, g0)
     return g
 
 @unsafe

@@ -53,6 +53,13 @@ if [ ! -f fixtures/m5/rg.mkv ]; then
     -filter_complex "[0:v][1:v]concat=n=2:v=1:a=0,format=rgb24" \
     -c:v ffv1 fixtures/m5/rg.mkv
 fi
+python3 tools/mkpkgscene.py
+bend t_fat.bend -o build/fat
+./build/fat > build/fat.out
+python3 tools/check_fat.py build/fat.out
+bend t_fx.bend -o build/fx
+./build/fx > build/fx.out
+python3 tools/check_fx.py build/fx.out build
 scripts/probe.sh fixtures/workshop
 python3 tools/check_probe.py build/probe.out
 bend t_live.bend -o build/live
@@ -61,4 +68,7 @@ python3 tools/check_live.py build/live.out build/bands.png
 bend t_pkgscene.bend -o build/pkgscene
 ./build/pkgscene > build/pkgscene.out
 python3 tools/check_m3.py build/pkgscene.out build/pkgscene.png
+bend t_pkgmid.bend -o build/pkgmid
+./build/pkgmid > build/pkgmid.out
+python3 tools/check_m3.py build/pkgmid.out build/pkgmid.png
 echo M5 PASS

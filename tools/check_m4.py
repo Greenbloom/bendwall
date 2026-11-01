@@ -9,6 +9,7 @@ if "--workshop" in sys.argv:
         "ITEM 10", "ITEM 11", "ITEM 12", "ITEM 13", "ITEM 14",
         "ITEM 15", "ITEM 16", "ITEM 18", "ITEM 19",
         "ITEM 20", "ITEM 21", "ITEM 22", "ITEM 23", "ITEM 24", "ITEM 26",
+        "ITEM 30", "ITEM 31", "ITEM 32", "ITEM 33",
     ]
 else:
     want = [

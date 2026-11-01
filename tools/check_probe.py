@@ -18,6 +18,10 @@ want = [
     "23 partial particle effect:tint effect:pulse",
     "24 loaded",
     "26 loaded",
+    "30 loaded",
+    "31 loaded",
+    "32 loaded",
+    "33 loaded",
 ]
 if got != want:
     print("GOT")

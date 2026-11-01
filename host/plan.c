@@ -109,12 +109,52 @@ static uint8_t* read_bin(const char* path, int* n_out) {
     return b;
 }
 
-static int pkg_member(const char* pkg, const char* want, uint8_t** out, int* n_out) {
+static const char* base_of(const char* name) {
+    const char* s;
+    if (!name) return "";
+    s = strrchr(name, '/');
+    if (!s) s = strrchr(name, '\\');
+    return s ? s + 1 : name;
+}
+
+/* Exact member name scores 2. A basename hit under materials/ scores 3,
+   any other basename hit scores 1. PKGV0001 through PKGV0009 share this
+   table; version >= 25 is rejected. */
+static int name_score(const char* name, const char* want, int by_base) {
+    char alt[640];
+    const char* b;
+    int hit;
+    if (!name || !want || !name[0] || !want[0]) return 0;
+    if (!by_base) return strcasecmp(name, want) == 0 ? 2 : 0;
+    b = base_of(name);
+    hit = strcasecmp(b, want) == 0;
+    if (!hit && !ends_with(want, ".tex")) {
+        snprintf(alt, sizeof alt, "%s.tex", want);
+        hit = strcasecmp(b, alt) == 0;
+    }
+    if (!hit && !ends_with(want, ".png")) {
+        snprintf(alt, sizeof alt, "%s.png", want);
+        hit = strcasecmp(b, alt) == 0;
+    }
+    if (!hit && !ends_with(want, ".jpg") && !ends_with(want, ".jpeg")) {
+        snprintf(alt, sizeof alt, "%s.jpg", want);
+        hit = strcasecmp(b, alt) == 0;
+        if (!hit) {
+            snprintf(alt, sizeof alt, "%s.jpeg", want);
+            hit = strcasecmp(b, alt) == 0;
+        }
+    }
+    if (!hit) return 0;
+    if (!strncasecmp(name, "materials/", 10)) return 3;
+    return 1;
+}
+
+static int pkg_find(const char* pkg, const char* want, int by_base, uint8_t** out, int* n_out) {
     FILE* f;
     uint8_t hdr[8];
     uint32_t magic_len, count, i;
     uint32_t found_off = 0, found_sz = 0;
-    int found = 0;
+    int best = 0;
     long start;
     uint8_t* buf;
     char magic[16];
@@ -135,6 +175,7 @@ static int pkg_member(const char* pkg, const char* want, uint8_t** out, int* n_o
     for (i = 0; i < count; i++) {
         uint32_t nl, off, sz;
         char* name;
+        int score;
         if (fread(hdr, 1, 4, f) != 4) goto fail;
         nl = ru32(hdr);
         if (nl > 1000000) goto fail;
@@ -151,15 +192,16 @@ static int pkg_member(const char* pkg, const char* want, uint8_t** out, int* n_o
         }
         off = ru32(hdr);
         sz = ru32(hdr + 4);
-        if (!found && nl > 0 && nl <= 0x800 && strcasecmp(name, want) == 0) {
-            found = 1;
+        score = (nl > 0 && nl <= 0x800) ? name_score(name, want, by_base) : 0;
+        if (score > best && sz >= 1 && sz <= CAP_FILE) {
+            best = score;
             found_off = off;
             found_sz = sz;
         }
         free(name);
     }
     start = ftell(f);
-    if (!found || found_sz < 1 || found_sz > CAP_FILE) goto fail;
+    if (!best) goto fail;
     if (fseek(f, start + (long)found_off, SEEK_SET) != 0) goto fail;
     buf = (uint8_t*)malloc((size_t)found_sz + 1);
     if (!buf) goto fail;
@@ -177,7 +219,11 @@ fail:
     return 0;
 }
 
-static int pkg_dir(const char* dir, const char* name, uint8_t** out, int* n_out) {
+static int pkg_member(const char* pkg, const char* want, uint8_t** out, int* n_out) {
+    return pkg_find(pkg, want, 0, out, n_out);
+}
+
+static int pkg_dir_mode(const char* dir, const char* name, int by_base, uint8_t** out, int* n_out) {
     static const char* known[] = {"scene.pkg", "gifscene.pkg", NULL};
     char path[1100];
     DIR* d;
@@ -185,7 +231,7 @@ static int pkg_dir(const char* dir, const char* name, uint8_t** out, int* n_out)
     int k, hits = 0;
     for (k = 0; known[k]; k++) {
         snprintf(path, sizeof path, "%s/%s", dir, known[k]);
-        if (pkg_member(path, name, out, n_out)) return 1;
+        if (pkg_find(path, name, by_base, out, n_out)) return 1;
     }
     d = opendir(dir);
     if (!d) return 0;
@@ -197,13 +243,17 @@ static int pkg_dir(const char* dir, const char* name, uint8_t** out, int* n_out)
         if (!strcasecmp(ent->d_name, "scene.pkg") || !strcasecmp(ent->d_name, "gifscene.pkg")) continue;
         snprintf(path, sizeof path, "%s/%s", dir, ent->d_name);
         hits++;
-        if (pkg_member(path, name, out, n_out)) {
+        if (pkg_find(path, name, by_base, out, n_out)) {
             closedir(d);
             return 1;
         }
     }
     closedir(d);
     return 0;
+}
+
+static int pkg_dir(const char* dir, const char* name, uint8_t** out, int* n_out) {
+    return pkg_dir_mode(dir, name, 0, out, n_out);
 }
 
 static int read_named(const char* dir, const char* assets, const char* rel, uint8_t** out, int* n_out) {
@@ -916,8 +966,10 @@ static uint8_t* checker_px(int* w, int* h) {
     return px;
 }
 
-static void miss_log(const char* what) {
-    fprintf(stderr, "bendwall: missing texture %s\n", what && what[0] ? what : "(unnamed)");
+static void miss_log(const char* what, int decode_fail) {
+    fprintf(stderr, "bendwall: texture %s %s\n",
+            decode_fail ? "decode failed" : "not found",
+            what && what[0] ? what : "(unnamed)");
 }
 
 static int push_layer(BwPlan* plan, BwLayer layer) {
@@ -936,9 +988,9 @@ static int push_layer(BwPlan* plan, BwLayer layer) {
     return 1;
 }
 
-static void push_missing(BwPlan* plan, const char* what, float cx, float cy, float lw, float lh, float deg, float alpha, int full) {
+static void push_missing(BwPlan* plan, const char* what, int decode_fail, float cx, float cy, float lw, float lh, float deg, float alpha, int full) {
     BwLayer L;
-    miss_log(what);
+    miss_log(what, decode_fail);
     plan->missing++;
     memset(&L, 0, sizeof L);
     L.rgba = checker_px(&L.w, &L.h);
@@ -1049,27 +1101,83 @@ static char* load_json_rel(const char* dir, const char* assets, const char* rel)
     return NULL;
 }
 
-static int load_pixels(const char* dir, const char* assets, const char* rel, uint8_t** rgba, int* w, int* h) {
-    uint8_t* b = NULL;
-    int n = 0, ok;
-    char alt[1100];
-    const char* ext = raster_ext(rel) ? "" : ".tex";
-    if (!read_rel(dir, assets, rel, ext, &b, &n)) {
-        lower_copy(rel, alt, sizeof alt);
-        if (strcmp(alt, rel) == 0 || !read_rel(dir, assets, alt, ext, &b, &n)) return 0;
+/* 1 decoded, 0 absent, -1 bytes were found and are not a picture.
+   why receives the path that failed to decode, or the name that was absent. */
+static void copy_cap(char* dst, int cap, const char* src) {
+    int i = 0;
+    if (!dst || cap < 1) return;
+    if (!src) {
+        dst[0] = 0;
+        return;
     }
-    ok = decode_bytes(b, n, rgba, w, h);
-    free(b);
-    return ok;
+    while (src[i] && i + 1 < cap) {
+        dst[i] = src[i];
+        i++;
+    }
+    dst[i] = 0;
 }
 
-static void add_pixels(BwPlan* plan, const Jv* obj, const char* what, uint8_t* px, int w, int h, float mw, float mh, int model_full) {
+static int try_rel(const char* dir, const char* assets, const char* rel, uint8_t** rgba, int* w, int* h) {
+    uint8_t* b = NULL;
+    int n = 0, ok;
+    const char* ext = raster_ext(rel) ? "" : ".tex";
+    if (!read_rel(dir, assets, rel, ext, &b, &n)) return 0;
+    ok = decode_bytes(b, n, rgba, w, h);
+    free(b);
+    return ok ? 1 : -1;
+}
+
+static int load_pixels(const char* dir, const char* assets, const char* rel, uint8_t** rgba, int* w, int* h, char* why, int why_cap) {
+    char cand[4][1100];
+    char lower[1100];
+    const char* base;
+    int nc = 0, i, st, bad = 0;
+    uint8_t* raw = NULL;
+    int n = 0;
+    if (why && why_cap > 0) why[0] = 0;
+    if (!rel || !rel[0]) return 0;
+    snprintf(cand[nc++], 1100, "%s", rel);
+    lower_copy(rel, lower, sizeof lower);
+    if (nc < 4 && strcmp(lower, rel) != 0) snprintf(cand[nc++], 1100, "%s", lower);
+    base = base_of(rel);
+    /* A material slot named "ztyz" is materials/ztyz.tex in the package,
+       then the same path under BENDWALL_ASSETS. */
+    if (nc < 4 && (base == rel || base[0] == 0))
+        snprintf(cand[nc++], 1100, "materials/%s", rel);
+    else if (nc < 4 && strncasecmp(rel, "materials/", 10) != 0)
+        snprintf(cand[nc++], 1100, "materials/%s", base);
+    for (i = 0; i < nc; i++) {
+        st = try_rel(dir, assets, cand[i], rgba, w, h);
+        if (st > 0) return 1;
+        if (st < 0) {
+            bad = 1;
+            if (why && why_cap > 0) copy_cap(why, why_cap, cand[i]);
+        }
+    }
+    if (!bad && dir && dir[0] && pkg_dir_mode(dir, base[0] ? base : rel, 1, &raw, &n)) {
+        if (decode_bytes(raw, n, rgba, w, h)) {
+            free(raw);
+            return 1;
+        }
+        free(raw);
+        bad = 1;
+        if (why && why_cap > 0) {
+            char labeled[1100];
+            snprintf(labeled, sizeof labeled, "materials/%s", base[0] ? base : rel);
+            copy_cap(why, why_cap, labeled);
+        }
+    }
+    if (why && why_cap > 0 && !why[0]) copy_cap(why, why_cap, rel);
+    return bad ? -1 : 0;
+}
+
+static void add_pixels(BwPlan* plan, const Jv* obj, const char* what, int decode_fail, uint8_t* px, int w, int h, float mw, float mh, int model_full) {
     BwLayer L;
     float cx, cy, lw, lh, deg, alpha;
     int full;
     if (!px) {
         place_of(obj, plan, mw, mh, model_full, &cx, &cy, &lw, &lh, &deg, &alpha, &full);
-        push_missing(plan, what, cx, cy, lw, lh, deg, alpha, full);
+        push_missing(plan, what, decode_fail, cx, cy, lw, lh, deg, alpha, full);
         return;
     }
     place_of(obj, plan, mw > 0 ? mw : (float)w, mh > 0 ? mh : (float)h, model_full, &cx, &cy, &lw, &lh, &deg, &alpha, &full);
@@ -1106,13 +1214,20 @@ static int first_texture(const Jv* mat, char* out, int cap) {
     return 0;
 }
 
+static char* load_json_prefixed(const char* dir, const char* assets, const char* rel, const char* prefix) {
+    char alt[1100];
+    if (!rel || !rel[0] || strchr(rel, '/') || strchr(rel, '\\')) return NULL;
+    snprintf(alt, sizeof alt, "%s%s", prefix, rel);
+    return load_json_rel(dir, assets, alt);
+}
+
 static void take_image(BwPlan* plan, const char* dir, const char* assets, const Jv* obj) {
     Jv im;
-    char path[512], tex[512], matp[512];
+    char path[512], tex[512], matp[512], why[1100];
     char* model = NULL;
     char* mat = NULL;
     Jv root, material;
-    int present = 0, model_full = 0;
+    int present = 0, model_full = 0, st = 0;
     float mw = 0, mh = 0;
     uint8_t* px = NULL;
     int w = 0, h = 0;
@@ -1120,23 +1235,25 @@ static void take_image(BwPlan* plan, const char* dir, const char* assets, const 
     if (!j_obj_get(obj, "image", &im)) return;
     im = j_unwrap(&im);
     if (im.kind != 1 || !j_str(&im, path, sizeof path)) {
-        push_missing(plan, "image", 0, 0, 0, 0, 0, 1, 1);
+        push_missing(plan, "image", 0, 0, 0, 0, 0, 0, 1, 1);
         return;
     }
     slash(path);
     if (raster_ext(path)) {
-        if (!load_pixels(dir, assets, path, &px, &w, &h)) px = NULL;
-        add_pixels(plan, obj, path, px, w, h, 0, 0, 0);
-        if (px) {
+        st = load_pixels(dir, assets, path, &px, &w, &h, why, (int)sizeof why);
+        if (st <= 0) px = NULL;
+        add_pixels(plan, obj, why[0] ? why : path, st < 0, px, w, h, 0, 0, 0);
+        if (px && plan->nlayers > 0) {
             /* direct stills cover the framebuffer, which is what the tint fixture draws */
-            if (plan->nlayers > 0) plan->layers[plan->nlayers - 1].full = 1;
+            plan->layers[plan->nlayers - 1].full = 1;
         }
         return;
     }
     model = load_json_rel(dir, assets, path);
+    if (!model) model = load_json_prefixed(dir, assets, path, "models/");
     if (!model || !j_doc(model, &root)) {
         free(model);
-        push_missing(plan, path, 0, 0, 0, 0, 0, 1, 1);
+        push_missing(plan, path, 0, 0, 0, 0, 0, 0, 1, 1);
         return;
     }
     model_full = j_num(&root, "fullscreen", 0, &present) > 0.5f;
@@ -1144,20 +1261,23 @@ static void take_image(BwPlan* plan, const char* dir, const char* assets, const 
     mh = j_num(&root, "height", 0, &present);
     if (!j_field(&root, "material", matp, sizeof matp)) {
         free(model);
-        push_missing(plan, path, 0, 0, 0, 0, 0, 1, 1);
+        push_missing(plan, path, 0, 0, 0, 0, 0, 0, 1, 1);
         return;
     }
     slash(matp);
     free(model);
     mat = load_json_rel(dir, assets, matp);
+    if (!mat) mat = load_json_prefixed(dir, assets, matp, "materials/");
     if (!mat || !j_doc(mat, &material) || !first_texture(&material, tex, sizeof tex)) {
         free(mat);
-        push_missing(plan, matp, 0, 0, 0, 0, 0, 1, 1);
+        push_missing(plan, matp, 0, 0, 0, 0, 0, 0, 1, 1);
         return;
     }
     free(mat);
-    if (!load_pixels(dir, assets, tex, &px, &w, &h)) px = NULL;
-    add_pixels(plan, obj, tex, px, w, h, mw, mh, model_full);
+    why[0] = 0;
+    st = load_pixels(dir, assets, tex, &px, &w, &h, why, (int)sizeof why);
+    if (st <= 0) px = NULL;
+    add_pixels(plan, obj, why[0] ? why : tex, st < 0, px, w, h, mw, mh, model_full);
 }
 
 static void take_text(BwPlan* plan, const Jv* obj) {

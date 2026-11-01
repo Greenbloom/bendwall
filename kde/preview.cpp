@@ -25,6 +25,10 @@
 #include <QVariant>
 #include <QVector>
 
+#ifdef BENDWALL_HAS_WEBENGINE
+#include <QtWebEngineQuick/qtwebenginequickglobal.h>
+#endif
+
 #include <cstdlib>
 #include <cstdio>
 #include <iostream>
@@ -253,6 +257,13 @@ static int watchCheck(const QString& dir) {
 
 int main(int argc, char** argv) {
     const std::string cmd = argc > 1 ? argv[1] : "";
+    /* WebEngineView stays uncreatable until this runs, and it has to run
+       before the application object. Plasmashell does its own init; the
+       preview process has to do it itself. */
+#ifdef BENDWALL_HAS_WEBENGINE
+    QCoreApplication::setAttribute(Qt::AA_ShareOpenGLContexts);
+    QtWebEngineQuick::initialize();
+#endif
     if (cmd == "--dump-props" && argc >= 3) {
         QCoreApplication app(argc, argv);
         return dumpProps(QString::fromLocal8Bit(argv[2]));

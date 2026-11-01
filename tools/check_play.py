@@ -76,8 +76,34 @@ if int(miss.group(1)) < 1 or miss.group(2) != "1":
 if len(sys.argv) < 3:
     raise SystemExit("need stderr")
 err = pathlib.Path(sys.argv[2]).read_text()
-if "bendwall: missing texture" not in err:
+if "bendwall: texture not found" not in err:
     raise SystemExit(err)
+if "bendwall: texture decode failed" not in err:
+    raise SystemExit(err)
+name = grab(r"NAME c=(\d+) (\d+) (\d+) m=(\d+) (\d+) (\d+)")
+nc = [int(name.group(i)) for i in (1, 2, 3)]
+nm = [int(name.group(i)) for i in (4, 5, 6)]
+if nc[0] > 40 or nc[1] < 200 or nc[2] < 200 or nm[0] < 200 or nm[1] > 40 or nm[2] < 200:
+    raise SystemExit(name.group(0))
+big = grab(r"BIGLZ c=(\d+) (\d+) (\d+) m=(\d+) (\d+) (\d+)")
+bc = [int(big.group(i)) for i in (1, 2, 3)]
+bm = [int(big.group(i)) for i in (4, 5, 6)]
+if bc[0] > 40 or bc[1] < 200 or bc[2] < 200 or bm[0] < 200 or bm[1] > 40 or bm[2] < 200:
+    raise SystemExit(big.group(0))
+dxtb = [int(x) for x in grab(r"BIGDXT (\d+) (\d+) (\d+)").groups()]
+if dxtb[0] > 40 or dxtb[1] < 200 or dxtb[2] > 40:
+    raise SystemExit(f"bigdxt {dxtb}")
+asset = [int(x) for x in grab(r"ASSET (\d+) (\d+) (\d+)").groups()]
+if asset[2] < 200 or asset[0] > 40 or asset[1] > 80:
+    raise SystemExit(f"asset {asset}")
+root = pathlib.Path(sys.argv[1]).resolve().parents[1]
+for rel in ("fixtures/play/pkg9big/lz/scene.pkg", "fixtures/play/pkg9big/dxt/scene.pkg"):
+    sz = (root / rel).stat().st_size
+    if sz <= 2000000:
+        raise SystemExit(f"{rel} is {sz} bytes")
+magic_pkg = (root / "fixtures/play/named/scene.pkg").read_bytes()
+if b"PKGV0009" not in magic_pkg[:24]:
+    raise SystemExit("named package is not PKGV0009")
 if "PLAYMAIN ok" not in text:
     raise SystemExit(text)
 print("PLAY PASS")

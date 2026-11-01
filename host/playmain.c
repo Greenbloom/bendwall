@@ -304,6 +304,81 @@ int main(int argc, char** argv) {
   }
   bw_play_close();
 
+  bw_play_audio(NULL, 0);
+  snprintf(path, sizeof path, "%s/named", root);
+  if (!bw_play_open(path, 160, 90)) {
+    fprintf(stderr, "open named failed\n%s\n", bw_play_line());
+    return 1;
+  }
+  {
+    int cr = 0, cg = 0, cb = 0, mr = 0, mg = 0, mb = 0;
+    if (!at(20, 45, &cr, &cg, &cb) || !at(140, 45, &mr, &mg, &mb)) return 1;
+    printf("NAME c=%d %d %d m=%d %d %d\n", cr, cg, cb, mr, mg, mb);
+    if (cr > 40 || cg < 200 || cb < 200 || mr < 200 || mg > 40 || mb < 200) bad = 1;
+  }
+  bw_play_close();
+
+  bw_play_audio(NULL, 0);
+  snprintf(path, sizeof path, "%s/pkg9big/lz", root);
+  if (!bw_play_open(path, 160, 90)) {
+    fprintf(stderr, "open biglz failed\n%s\n", bw_play_line());
+    return 1;
+  }
+  {
+    int cr = 0, cg = 0, cb = 0, mr = 0, mg = 0, mb = 0;
+    if (!at(20, 45, &cr, &cg, &cb) || !at(140, 45, &mr, &mg, &mb)) return 1;
+    printf("BIGLZ c=%d %d %d m=%d %d %d\n", cr, cg, cb, mr, mg, mb);
+    if (cr > 40 || cg < 200 || cb < 200 || mr < 200 || mg > 40 || mb < 200) bad = 1;
+  }
+  bw_play_close();
+
+  bw_play_audio(NULL, 0);
+  snprintf(path, sizeof path, "%s/pkg9big/dxt", root);
+  if (!bw_play_open(path, 160, 90)) {
+    fprintf(stderr, "open bigdxt failed\n%s\n", bw_play_line());
+    return 1;
+  }
+  {
+    int dr = 0, dg = 0, db = 0;
+    if (!at(80, 45, &dr, &dg, &db)) return 1;
+    printf("BIGDXT %d %d %d\n", dr, dg, db);
+    if (dr > 40 || dg < 200 || db > 40) bad = 1;
+  }
+  bw_play_close();
+
+  bw_play_audio(NULL, 0);
+  {
+    const char* old_assets = getenv("BENDWALL_ASSETS");
+    char saved[1100];
+    saved[0] = 0;
+    if (old_assets) snprintf(saved, sizeof saved, "%s", old_assets);
+    snprintf(path, sizeof path, "%s/assetroot", root);
+    setenv("BENDWALL_ASSETS", path, 1);
+    snprintf(path, sizeof path, "%s/fromassets", root);
+    if (!bw_play_open(path, 160, 90)) {
+      fprintf(stderr, "open assets failed\n%s\n", bw_play_line());
+      return 1;
+    }
+    {
+      int ar = 0, ag = 0, ab = 0;
+      if (!at(80, 45, &ar, &ag, &ab)) return 1;
+      printf("ASSET %d %d %d\n", ar, ag, ab);
+      if (ab < 200 || ar > 40 || ag > 80) bad = 1;
+    }
+    bw_play_close();
+    if (saved[0]) setenv("BENDWALL_ASSETS", saved, 1);
+    else unsetenv("BENDWALL_ASSETS");
+  }
+
+  bw_play_audio(NULL, 0);
+  snprintf(path, sizeof path, "%s/badtex", root);
+  if (!bw_play_open(path, 64, 64)) {
+    fprintf(stderr, "open badtex failed\n%s\n", bw_play_line());
+    return 1;
+  }
+  printf("BAD %s\n", bw_play_line());
+  bw_play_close();
+
   if (!diff) bad = 1;
   if (b16 < 0.9f || b32 < 0.9f || b64 < 0.9f || r16 > 0.05f) bad = 1;
   if (tone64 < 0.8f || tone16 < 0.8f) bad = 1;

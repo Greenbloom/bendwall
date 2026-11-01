@@ -86,6 +86,58 @@ def oriented_clip(path):
     ], check=True)
 
 
+def half_rgba(w, h):
+    left = w // 2
+    row = CYAN * left + MAGENTA * (w - left)
+    return row * h
+
+
+def solid_rgba(w, h, px):
+    return px * (w * h)
+
+
+def dxt5_solid(w, h, block):
+    if w % 4 or h % 4:
+        raise SystemExit("dxt size")
+    return block * ((w // 4) * (h // 4))
+
+
+def named_scene_pkg(tex_name, tex_bytes, ver=9):
+    scene = (
+        '{"general":{"orthogonalprojection":{"width":160,"height":90}},'
+        '"objects":[{"name":"bg","image":"models/bg.json","origin":"80 45 0",'
+        '"size":"160 90","alpha":1}]}'
+    )
+    model = '{"material":"materials/bg.json","fullscreen":true,"width":160,"height":90}\n'
+    material = '{"passes":[{"textures":["%s"]}]}\n' % tex_name
+    return pkg([
+        ("scene.json", scene.encode("utf-8")),
+        ("models/bg.json", model.encode("utf-8")),
+        ("materials/bg.json", material.encode("utf-8")),
+        ("materials/%s.tex" % tex_name, tex_bytes),
+    ], ver)
+
+
+def bare_scene_pkg(tex_name, ver=9):
+    """Scene whose texture is not in the package. Lookup must leave the pkg."""
+    scene = (
+        '{"general":{"orthogonalprojection":{"width":160,"height":90}},'
+        '"objects":[{"name":"bg","image":"models/bg.json","alpha":1}]}'
+    )
+    model = '{"material":"materials/bg.json","fullscreen":true}\n'
+    material = '{"passes":[{"textures":["%s"]}]}\n' % tex_name
+    return pkg([
+        ("scene.json", scene.encode("utf-8")),
+        ("models/bg.json", model.encode("utf-8")),
+        ("materials/bg.json", material.encode("utf-8")),
+    ], ver)
+
+
+def project(dirpath):
+    write_text(os.path.join(dirpath, "project.json"),
+               '{ "type": "scene", "file": "scene.json" }\n')
+
+
 def main():
     write(os.path.join(PLAY, "texscene", "scene.pkg"), scene_pkg())
     write(os.path.join(PLAY, "texscene", "decoy.png"), png_rgba(8, 8, YELLOW * 64))
@@ -131,6 +183,54 @@ def main():
 """)
     write_text(os.path.join(PLAY, "web", "index.html"),
                "<!DOCTYPE html><html><body style=\"margin:0;background:#00ff00\"></body></html>\n")
+
+    # Short texture name inside PKGV0009. The member is materials/ztyz.tex.
+    ztyz = half_rgba(8, 4)
+    zcomp = lz4_literals(ztyz)
+    write(os.path.join(PLAY, "named", "scene.pkg"), named_scene_pkg(
+        "ztyz",
+        tex(fmt=0, tw=8, th=4, iw=8, ih=4, bv=2,
+            images=[[mip(8, 4, zcomp, lz4=1, raw=len(ztyz))]]),
+        ver=9,
+    ))
+    project(os.path.join(PLAY, "named"))
+
+    # Stored entries past the old 2MB read. PKGV0009 again.
+    lw, lh = 720, 720
+    lraw = half_rgba(lw, lh)
+    if len(lraw) <= 2000000:
+        raise SystemExit("lz4 fixture is not big")
+    lcomp = lz4_literals(lraw)
+    write(os.path.join(PLAY, "pkg9big", "lz", "scene.pkg"), named_scene_pkg(
+        "biglz",
+        tex(fmt=0, tw=lw, th=lh, iw=lw, ih=lh, bv=2,
+            images=[[mip(lw, lh, lcomp, lz4=1, raw=len(lraw))]]),
+        ver=9,
+    ))
+    project(os.path.join(PLAY, "pkg9big", "lz"))
+    dw, dh = 1664, 1280
+    draw = dxt5_solid(dw, dh, DXT5_GREEN)
+    if len(draw) <= 2000000:
+        raise SystemExit("dxt fixture is not big")
+    write(os.path.join(PLAY, "pkg9big", "dxt", "scene.pkg"), named_scene_pkg(
+        "bigdxt",
+        tex(fmt=4, tw=dw, th=dh, iw=dw, ih=dh, bv=2,
+            images=[[mip(dw, dh, draw)]]),
+        ver=9,
+    ))
+    project(os.path.join(PLAY, "pkg9big", "dxt"))
+
+    blue = bytes([10, 40, 240, 255])
+    write(os.path.join(PLAY, "assetroot", "materials", "fromassets.tex"), tex(
+        fmt=0, images=[[mip(2, 2, blue * 4)]],
+    ))
+    write(os.path.join(PLAY, "fromassets", "scene.pkg"), bare_scene_pkg("fromassets", ver=9))
+    project(os.path.join(PLAY, "fromassets"))
+
+    write(os.path.join(PLAY, "badtex", "scene.pkg"), named_scene_pkg(
+        "bad", b"TEXV0005\x00this is not a texture", ver=9,
+    ))
+    project(os.path.join(PLAY, "badtex"))
     print("mktexscene ok")
 
 

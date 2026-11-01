@@ -13,6 +13,7 @@
 #include <QImage>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLibraryInfo>
 #include <QPainter>
 #include <QPaintEvent>
 #include <QQmlApplicationEngine>
@@ -209,6 +210,32 @@ static QString watchQmlPath() {
     return {};
 }
 
+/* A real Plasma module links a C++ plugin. The preview stub is a QML Item
+   and must not be treated as that module, or it would hide WallpaperItem. */
+static bool realPlasmaPlasmoid() {
+    const QString rel = QStringLiteral("/org/kde/plasma/plasmoid/qmldir");
+    QStringList roots;
+    roots << QLibraryInfo::path(QLibraryInfo::QmlImportsPath);
+    roots << QStringLiteral("/usr/lib/qt6/qml");
+    roots << QStringLiteral("/usr/lib64/qt6/qml");
+    roots << QStringLiteral("/usr/lib/x86_64-linux-gnu/qt6/qml");
+    roots << QDir::homePath() + QStringLiteral("/.local/lib/qt6/qml");
+    for (const QString& root : roots) {
+        QFile file(root + rel);
+        if (!file.open(QIODevice::ReadOnly)) continue;
+        const QByteArray body = file.readAll();
+        if (body.contains("plugin") || body.contains("linktarget") || body.contains("classname"))
+            return true;
+    }
+    return false;
+}
+
+static QString previewStubPath() {
+    const QString watch = watchQmlPath();
+    if (watch.isEmpty()) return QStringLiteral("kde/preview-qml");
+    return QFileInfo(watch).dir().filePath(QStringLiteral("preview-qml"));
+}
+
 static void addImports(QQmlApplicationEngine* engine) {
     engine->addImportPath(QCoreApplication::applicationDirPath());
     engine->addImportPath(QDir::homePath() + QStringLiteral("/.local/lib/qt6/qml"));
@@ -217,6 +244,37 @@ static void addImports(QQmlApplicationEngine* engine) {
     for (const QByteArray& part : parts) {
         if (!part.isEmpty()) engine->addImportPath(QString::fromLocal8Bit(part));
     }
+    if (!realPlasmaPlasmoid()) {
+        const QString stub = previewStubPath();
+        if (QFile::exists(stub + QStringLiteral("/org/kde/plasma/plasmoid/qmldir")))
+            engine->addImportPath(stub);
+    }
+}
+
+/* Load the wallpaper page when the real module is installed and print the
+   root class. Without Plasma, the static package check is the contract. */
+static int wallpaperRoot() {
+    if (!realPlasmaPlasmoid()) {
+        std::printf("WALLROOT static\n");
+        return 0;
+    }
+    QQmlApplicationEngine engine;
+    QList<QQmlError> errs;
+    QObject::connect(&engine, &QQmlApplicationEngine::warnings,
+                     [&errs](const QList<QQmlError>& w) { errs += w; });
+    addImports(&engine);
+    const QString watch = watchQmlPath();
+    const QString main = QFileInfo(watch).dir().filePath(QStringLiteral("bendwall/contents/ui/main.qml"));
+    engine.load(QUrl::fromLocalFile(main));
+    if (engine.rootObjects().isEmpty()) {
+        for (const QQmlError& err : errs)
+            std::cerr << err.toString().toStdString() << "\n";
+        std::printf("WALLROOT fail\n");
+        return 1;
+    }
+    const char* name = engine.rootObjects().first()->metaObject()->className();
+    std::printf("WALLROOT %s\n", name ? name : "");
+    return name && std::strstr(name, "WallpaperItem") ? 0 : 1;
 }
 
 static bool videoAudioRequested(int argc, char** argv) {
@@ -385,6 +443,10 @@ int main(int argc, char** argv) {
         if (dir.isEmpty()) return 1;
         return watchDiff(dir, videoAudioRequested(argc, argv));
     }
+    if (cmd == "--wallpaper-root") {
+        QGuiApplication app(argc, argv);
+        return wallpaperRoot();
+    }
     std::cerr << "usage:\n"
               << "  bendwall-preview --dump-props <project.json>\n"
               << "  bendwall-preview --dump-workshop <workshop-root>\n"
@@ -392,6 +454,7 @@ int main(int argc, char** argv) {
               << "  bendwall-preview --play-frames <item-dir> [frames]\n"
               << "  bendwall-preview --watch <item-dir> [--audio]\n"
               << "  bendwall-preview --watch-check <item-dir> [--audio]\n"
-              << "  bendwall-preview --watch-diff <item-dir> [--audio]\n";
+              << "  bendwall-preview --watch-diff <item-dir> [--audio]\n"
+              << "  bendwall-preview --wallpaper-root\n";
     return 2;
 }

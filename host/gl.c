@@ -17,6 +17,14 @@ static EGLDisplay g_dpy;
 static EGLSurface g_surf;
 static EGLContext g_ctx;
 static int g_w, g_h, g_ok;
+/* 1 when g_dpy came from eglGetPlatformDisplay. Qt's display is never terminated. */
+static int g_own_display;
+static int g_surfaceless;
+static int g_peer_mismatch;
+static int g_said;
+static char g_renderer[256];
+static char g_version[128];
+static char g_peer[256];
 static EGLImageKHR g_img = EGL_NO_IMAGE_KHR;
 static PFNEGLCREATEIMAGEKHRPROC g_create_image;
 static PFNEGLDESTROYIMAGEKHRPROC g_destroy_image;
@@ -91,6 +99,21 @@ static int make_target(int i) {
   return 1;
 }
 
+/* The caller's EGL context, saved around a probe. A missing context stays
+   missing: headless tools keep the player context current when they return. */
+typedef struct EglHold {
+  EGLDisplay dpy;
+  EGLContext ctx;
+  EGLSurface draw, read;
+} EglHold;
+
+static void egl_hold(EglHold* h) {
+  h->dpy = eglGetCurrentDisplay();
+  h->ctx = eglGetCurrentContext();
+  h->draw = eglGetCurrentSurface(EGL_DRAW);
+  h->read = eglGetCurrentSurface(EGL_READ);
+}
+
 static void destroy_color_image(void) {
   if (g_img == EGL_NO_IMAGE_KHR || !g_destroy_image || g_dpy == EGL_NO_DISPLAY) {
     g_img = EGL_NO_IMAGE_KHR;
@@ -101,22 +124,41 @@ static void destroy_color_image(void) {
 }
 
 void bw_gl_shutdown(void) {
-  if (!g_ok) return;
-  eglMakeCurrent(g_dpy, g_surf, g_surf, g_ctx);
-  destroy_color_image();
-  if (g_vbo) glDeleteBuffers(1, &g_vbo);
-  if (g_vao) glDeleteVertexArrays(1, &g_vao);
-  if (g_fbo[0] || g_fbo[1]) glDeleteFramebuffers(2, g_fbo);
-  if (g_ctex[0] || g_ctex[1]) glDeleteTextures(2, g_ctex);
-  eglMakeCurrent(g_dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
-  if (g_ctx != EGL_NO_CONTEXT) eglDestroyContext(g_dpy, g_ctx);
-  if (g_surf != EGL_NO_SURFACE) eglDestroySurface(g_dpy, g_surf);
-  /* Leave the display up. Terminating it would take Qt's EGL down with it. */
+  EglHold held;
+  EGLContext ours = g_ctx;
+  EGLDisplay doomed = EGL_NO_DISPLAY;
+  egl_hold(&held);
+  if (g_ok && g_dpy != EGL_NO_DISPLAY) {
+    eglMakeCurrent(g_dpy, g_surf, g_surf, g_ctx);
+    destroy_color_image();
+    if (g_vbo) glDeleteBuffers(1, &g_vbo);
+    if (g_vao) glDeleteVertexArrays(1, &g_vao);
+    if (g_fbo[0] || g_fbo[1]) glDeleteFramebuffers(2, g_fbo);
+    if (g_ctex[0] || g_ctex[1]) glDeleteTextures(2, g_ctex);
+    eglMakeCurrent(g_dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+    if (g_ctx != EGL_NO_CONTEXT) eglDestroyContext(g_dpy, g_ctx);
+    if (g_surf != EGL_NO_SURFACE) eglDestroySurface(g_dpy, g_surf);
+  }
   g_ctx = EGL_NO_CONTEXT;
   g_surf = EGL_NO_SURFACE;
   g_ok = 0;
   g_vao = g_vbo = 0;
   g_fbo[0] = g_fbo[1] = g_ctex[0] = g_ctex[1] = 0;
+  g_img_tried = 0;
+  g_create_image = NULL;
+  g_destroy_image = NULL;
+  /* Only a display this process opened with eglGetPlatformDisplay is ours.
+     Terminating EGL_DEFAULT_DISPLAY would take plasmashell's EGL down too. */
+  if (g_own_display && g_dpy != EGL_NO_DISPLAY) {
+    doomed = g_dpy;
+    eglTerminate(g_dpy);
+  }
+  if (g_own_display) g_dpy = EGL_NO_DISPLAY;
+  g_own_display = 0;
+  g_surfaceless = 0;
+  if (held.ctx != EGL_NO_CONTEXT && held.ctx != ours
+      && held.dpy != EGL_NO_DISPLAY && held.dpy != doomed)
+    eglMakeCurrent(held.dpy, held.draw, held.read, held.ctx);
 }
 
 int bw_gl_begin(void) {
@@ -139,44 +181,317 @@ int bw_gl_end(void) {
   return eglMakeCurrent(g_save_dpy, g_save_draw, g_save_read, g_save_ctx) ? 1 : 0;
 }
 
-int bw_gl_init(int w, int h) {
-  EGLint major = 0, minor = 0, n = 0;
-  EGLConfig cfg;
+static void egl_back(const EglHold* h) {
+  if (!h || h->ctx == EGL_NO_CONTEXT || h->dpy == EGL_NO_DISPLAY) return;
+  if (h->ctx == g_ctx) return;
+  eglMakeCurrent(h->dpy, h->draw, h->read, h->ctx);
+}
+
+static int ext_has(const char* list, const char* name) {
+  size_t n;
+  const char* p;
+  if (!list || !name) return 0;
+  n = strlen(name);
+  for (p = list; (p = strstr(p, name)) != NULL; p += n) {
+    if ((p == list || p[-1] == ' ') && (p[n] == 0 || p[n] == ' ')) return 1;
+  }
+  return 0;
+}
+
+static int software_name(const char* r) {
+  if (!r || !r[0]) return 1;
+  if (strstr(r, "llvmpipe") || strstr(r, "softpipe") || strstr(r, "swrast")
+      || strstr(r, "lavapipe") || strstr(r, "Software Rasterizer"))
+    return 1;
+  return 0;
+}
+
+static int vendor_match(const char* a, const char* b) {
+  if (!a || !b || !a[0] || !b[0]) return 0;
+  if (software_name(a) && software_name(b)) return 1;
+  if (strstr(a, "NVIDIA") && strstr(b, "NVIDIA")) return 1;
+  if ((strstr(a, "Intel") || strstr(a, "Iris")) && (strstr(b, "Intel") || strstr(b, "Iris")))
+    return 1;
+  if ((strstr(a, "Radeon") || strstr(a, "AMD") || strstr(a, "radeonsi"))
+      && (strstr(b, "Radeon") || strstr(b, "AMD") || strstr(b, "radeonsi")))
+    return 1;
+  if (strstr(a, b) || strstr(b, a)) return 1;
+  return 0;
+}
+
+static int software_forced(void) {
+  const char* e = getenv("LIBGL_ALWAYS_SOFTWARE");
+  return e && e[0] == '1' && e[1] == 0;
+}
+
+/* Mesa exports this only through eglGetProcAddress, not as a linkable symbol. */
+static PFNEGLQUERYDEVICESEXTPROC query_devices(void) {
+  static PFNEGLQUERYDEVICESEXTPROC fn;
+  static int tried;
+  if (!tried) {
+    tried = 1;
+    fn = (PFNEGLQUERYDEVICESEXTPROC)eglGetProcAddress("eglQueryDevicesEXT");
+  }
+  return fn;
+}
+
+static EGLenum api_hold(void) { return eglQueryAPI(); }
+
+static void api_back(EGLenum api) {
+  if (api == EGL_NONE) return;
+  eglBindAPI(api);
+}
+
+struct DispCand {
+  EGLDisplay dpy;
+  int own;
+  int software;
+  int surfaceless;
+  char rend[256];
+  char ver[128];
+};
+
+/* A throwaway context on one display. The display stays initialized.
+   surfaceless is set when the device has no pbuffer. */
+static int probe_renderer(EGLDisplay dpy, char* rend, int rcap, char* ver, int vcap, int* surfaceless) {
+  EGLConfig cfg = NULL;
+  EGLSurface surf = EGL_NO_SURFACE;
+  EGLContext ctx = EGL_NO_CONTEXT;
+  EGLint n = 0, major = 0, minor = 0;
   EGLint attr[] = {
     EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
     EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
     EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_ALPHA_SIZE, 8,
     EGL_NONE
   };
-  EGLint pbuf[] = { EGL_WIDTH, w, EGL_HEIGHT, h, EGL_NONE };
+  EGLint loose[] = {EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT, EGL_NONE};
+  EGLint pbuf[] = {EGL_WIDTH, 16, EGL_HEIGHT, 16, EGL_NONE};
+  EGLint ctxattr[] = {
+    EGL_CONTEXT_MAJOR_VERSION, 3,
+    EGL_CONTEXT_MINOR_VERSION, 3,
+    EGL_CONTEXT_OPENGL_PROFILE_MASK, EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT,
+    EGL_NONE
+  };
+  const char* r;
+  const char* v;
+  int ok = 0;
+  if (surfaceless) *surfaceless = 0;
+  if (dpy == EGL_NO_DISPLAY || !eglInitialize(dpy, &major, &minor)) return 0;
+  if (!eglBindAPI(EGL_OPENGL_API)) return 0;
+  if (!eglChooseConfig(dpy, attr, &cfg, 1, &n) || n < 1) {
+    if (surfaceless) *surfaceless = 1;
+    if (!eglChooseConfig(dpy, loose, &cfg, 1, &n) || n < 1) return 0;
+  }
+  if (!surfaceless || !*surfaceless) surf = eglCreatePbufferSurface(dpy, cfg, pbuf);
+  if (surf == EGL_NO_SURFACE && surfaceless) *surfaceless = 1;
+  ctx = eglCreateContext(dpy, cfg, EGL_NO_CONTEXT, ctxattr);
+  if (ctx == EGL_NO_CONTEXT) ctx = eglCreateContext(dpy, cfg, EGL_NO_CONTEXT, NULL);
+  if (ctx == EGL_NO_CONTEXT) {
+    if (surf != EGL_NO_SURFACE) eglDestroySurface(dpy, surf);
+    return 0;
+  }
+  if (!eglMakeCurrent(dpy, surf, surf, ctx)) {
+    eglDestroyContext(dpy, ctx);
+    if (surf != EGL_NO_SURFACE) eglDestroySurface(dpy, surf);
+    return 0;
+  }
+  r = (const char*)glGetString(GL_RENDERER);
+  v = (const char*)glGetString(GL_VERSION);
+  if (r && v && rcap > 1 && vcap > 1) {
+    snprintf(rend, (size_t)rcap, "%s", r);
+    snprintf(ver, (size_t)vcap, "%s", v);
+    ok = rend[0] != 0;
+  }
+  eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+  eglDestroyContext(dpy, ctx);
+  if (surf != EGL_NO_SURFACE) eglDestroySurface(dpy, surf);
+  return ok;
+}
+
+/* Prefer a hardware device that matches the context already current on this
+   thread (Qt's). Never setenv, and never eglTerminate a display we did not
+   open. Software-only hosts, including LIBGL_ALWAYS_SOFTWARE=1, keep
+   EGL_DEFAULT_DISPLAY so an EGLImage still imports there. */
+static int select_display(void) {
+  struct DispCand c[9];
+  EGLDeviceEXT devs[8];
+  EglHold held;
+  EGLint nd = 0;
+  int n = 0, i, pick = -1, defi = -1, any_hw = 0;
+  const char* ext;
+  PFNEGLQUERYDEVICESEXTPROC qdev;
+  EGLenum api;
+  egl_hold(&held);
+  api = api_hold();
+  g_peer[0] = 0;
+  g_peer_mismatch = 0;
+  if (held.ctx != EGL_NO_CONTEXT) {
+    const char* r = (const char*)glGetString(GL_RENDERER);
+    if (r) snprintf(g_peer, sizeof g_peer, "%s", r);
+  }
+  ext = eglQueryString(EGL_NO_DISPLAY, EGL_EXTENSIONS);
+  qdev = query_devices();
+  if (!software_forced()
+      && qdev
+      && ext_has(ext, "EGL_EXT_device_enumeration")
+      && ext_has(ext, "EGL_EXT_platform_device")
+      && qdev(8, devs, &nd) && nd > 0) {
+    if (nd > 8) nd = 8;
+    for (i = 0; i < (int)nd && n < 8; i++) {
+      EGLDisplay d = eglGetPlatformDisplay(EGL_PLATFORM_DEVICE_EXT, (void*)devs[i], NULL);
+      int sl = 0;
+      int foreign;
+      if (d == EGL_NO_DISPLAY) continue;
+      foreign = held.dpy != EGL_NO_DISPLAY && d == held.dpy;
+      if (!probe_renderer(d, c[n].rend, (int)sizeof c[n].rend, c[n].ver, (int)sizeof c[n].ver, &sl)) {
+        if (!foreign) eglTerminate(d);
+        continue;
+      }
+      c[n].dpy = d;
+      c[n].own = foreign ? 0 : 1;
+      c[n].surfaceless = sl;
+      c[n].software = software_name(c[n].rend);
+      if (!c[n].software) any_hw = 1;
+      n++;
+    }
+  }
+  {
+    EGLDisplay d = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    int sl = 0, seen = -1;
+    for (i = 0; i < n; i++)
+      if (c[i].dpy == d) seen = i;
+    if (seen >= 0) {
+      defi = seen;
+      c[seen].own = 0;
+    } else if (d != EGL_NO_DISPLAY
+               && probe_renderer(d, c[n].rend, (int)sizeof c[n].rend, c[n].ver, (int)sizeof c[n].ver, &sl)) {
+      c[n].dpy = d;
+      c[n].own = 0;
+      c[n].surfaceless = sl;
+      c[n].software = software_name(c[n].rend);
+      if (!c[n].software) any_hw = 1;
+      defi = n;
+      n++;
+    }
+  }
+  if (g_peer[0]) {
+    for (i = 0; i < n; i++)
+      if (vendor_match(c[i].rend, g_peer)) {
+        pick = i;
+        break;
+      }
+  }
+  if (pick < 0) {
+    for (i = 0; i < n; i++)
+      if (!c[i].software) {
+        pick = i;
+        break;
+      }
+  }
+  /* No hardware device: stay on the default display. A second llvmpipe
+     display will not import the image the tests sample. */
+  if (!any_hw && defi >= 0) pick = defi;
+  if (pick < 0 && defi >= 0) pick = defi;
+  if (pick < 0 && n > 0) pick = 0;
+  for (i = 0; i < n; i++) {
+    if (i == pick || !c[i].own) continue;
+    if (c[i].dpy != EGL_NO_DISPLAY) eglTerminate(c[i].dpy);
+  }
+  if (pick < 0) {
+    egl_back(&held);
+    api_back(api);
+    return 0;
+  }
+  g_dpy = c[pick].dpy;
+  g_own_display = c[pick].own;
+  g_surfaceless = c[pick].surfaceless;
+  snprintf(g_renderer, sizeof g_renderer, "%s", c[pick].rend);
+  snprintf(g_version, sizeof g_version, "%s", c[pick].ver);
+  if (g_peer[0] && !vendor_match(g_renderer, g_peer)) g_peer_mismatch = 1;
+  egl_back(&held);
+  api_back(api);
+  return 1;
+}
+
+int bw_gl_vendor_match(const char* peer) {
+  if (!peer || !peer[0] || !g_renderer[0]) return 1;
+  return vendor_match(g_renderer, peer);
+}
+
+int bw_gl_peer_mismatch(void) { return g_peer_mismatch; }
+
+const char* bw_gl_renderer(void) { return g_renderer; }
+
+int bw_gl_init(int w, int h) {
+  EglHold held;
+  EGLConfig cfg = NULL;
+  EGLint n = 0;
+  EGLint attr[] = {
+    EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
+    EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
+    EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_ALPHA_SIZE, 8,
+    EGL_NONE
+  };
+  EGLint loose[] = {EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT, EGL_NONE};
+  EGLint pbuf[] = {EGL_WIDTH, w, EGL_HEIGHT, h, EGL_NONE};
   EGLint ctx_attr[] = {
     EGL_CONTEXT_MAJOR_VERSION, 3,
     EGL_CONTEXT_MINOR_VERSION, 3,
     EGL_CONTEXT_OPENGL_PROFILE_MASK, EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT,
     EGL_NONE
   };
+  const char* rend;
+  const char* ver;
+  EGLenum api;
+  int rc = 0;
   if (g_ok) bw_gl_shutdown();
+  egl_hold(&held);
+  api = api_hold();
   g_logn = 0;
   g_log[0] = 0;
   g_w = w;
   g_h = h;
+  g_peer_mismatch = 0;
   if (g_dpy == EGL_NO_DISPLAY) {
-    g_dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
-    if (g_dpy == EGL_NO_DISPLAY) { blog("no display"); return 0; }
-    if (!eglInitialize(g_dpy, &major, &minor)) { blog("eglInitialize"); return 0; }
+    if (!select_display()) {
+      blog("no display");
+      goto done;
+    }
   }
-  if (!eglChooseConfig(g_dpy, attr, &cfg, 1, &n) || n < 1) { blog("no config"); return 0; }
-  if (!eglBindAPI(EGL_OPENGL_API)) { blog("bind api"); return 0; }
-  g_surf = eglCreatePbufferSurface(g_dpy, cfg, pbuf);
-  if (g_surf == EGL_NO_SURFACE) { blog("pbuffer"); return 0; }
+  if (!eglBindAPI(EGL_OPENGL_API)) {
+    blog("bind api");
+    goto done;
+  }
+  if (g_surfaceless || !eglChooseConfig(g_dpy, attr, &cfg, 1, &n) || n < 1) {
+    g_surfaceless = 1;
+    n = 0;
+    if (!eglChooseConfig(g_dpy, loose, &cfg, 1, &n) || n < 1) {
+      blog("no config");
+      goto done;
+    }
+  }
+  g_surf = EGL_NO_SURFACE;
+  if (!g_surfaceless) {
+    g_surf = eglCreatePbufferSurface(g_dpy, cfg, pbuf);
+    if (g_surf == EGL_NO_SURFACE) g_surfaceless = 1;
+  }
   g_ctx = eglCreateContext(g_dpy, cfg, EGL_NO_CONTEXT, ctx_attr);
   if (g_ctx == EGL_NO_CONTEXT) {
     blog("core 3.3 failed");
     g_ctx = eglCreateContext(g_dpy, cfg, EGL_NO_CONTEXT, NULL);
   }
-  if (g_ctx == EGL_NO_CONTEXT) { blog("no context"); return 0; }
-  if (!eglMakeCurrent(g_dpy, g_surf, g_surf, g_ctx)) { blog("make current"); return 0; }
-  if (!make_target(0) || !make_target(1)) return 0;
+  if (g_ctx == EGL_NO_CONTEXT) {
+    blog("no context");
+    goto done;
+  }
+  if (!eglMakeCurrent(g_dpy, g_surf, g_surf, g_ctx)) {
+    blog("make current");
+    goto done;
+  }
+  if (!make_target(0) || !make_target(1)) {
+    blog("fbo");
+    goto done;
+  }
   glGenVertexArrays(1, &g_vao);
   glGenBuffers(1, &g_vbo);
   glBindVertexArray(g_vao);
@@ -189,10 +504,36 @@ int bw_gl_init(int w, int h) {
   glDisable(GL_BLEND);
   glDisable(GL_DEPTH_TEST);
   glDisable(GL_DITHER);
+  rend = (const char*)glGetString(GL_RENDERER);
+  ver = (const char*)glGetString(GL_VERSION);
+  if (rend && rend[0]) snprintf(g_renderer, sizeof g_renderer, "%s", rend);
+  if (ver && ver[0]) snprintf(g_version, sizeof g_version, "%s", ver);
+  if (g_peer[0] && g_renderer[0]) g_peer_mismatch = !vendor_match(g_renderer, g_peer);
+  blog(g_renderer);
+  blog(g_version);
+  if (!g_said) {
+    fprintf(stderr, "bendwall: renderer %s | %s\n",
+            g_renderer[0] ? g_renderer : "unknown",
+            g_version[0] ? g_version : "unknown");
+    g_said = 1;
+  }
   g_ok = 1;
-  blog((const char*)glGetString(GL_RENDERER));
-  blog((const char*)glGetString(GL_VERSION));
-  return 1;
+  rc = 1;
+done:
+  if (!rc) {
+    if (g_dpy != EGL_NO_DISPLAY && (g_ctx != EGL_NO_CONTEXT || g_surf != EGL_NO_SURFACE))
+      eglMakeCurrent(g_dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+    if (g_dpy != EGL_NO_DISPLAY && g_ctx != EGL_NO_CONTEXT) eglDestroyContext(g_dpy, g_ctx);
+    if (g_dpy != EGL_NO_DISPLAY && g_surf != EGL_NO_SURFACE) eglDestroySurface(g_dpy, g_surf);
+    g_ctx = EGL_NO_CONTEXT;
+    g_surf = EGL_NO_SURFACE;
+    g_vao = g_vbo = 0;
+    g_fbo[0] = g_fbo[1] = g_ctex[0] = g_ctex[1] = 0;
+    g_ok = 0;
+  }
+  egl_back(&held);
+  api_back(api);
+  return rc;
 }
 
 int bw_gl_tex(int which) {

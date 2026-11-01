@@ -70,6 +70,26 @@ static int off_white(int cy, int band) {
   return c;
 }
 
+static int white_out(int cx, int cy, int rad) {
+  int w = 0, h = 0, n, x, y, c = 0;
+  uint8_t* px;
+  if (!bw_play_size(&w, &h)) return 0;
+  px = (uint8_t*)malloc((size_t)w * (size_t)h * 4);
+  if (!px) return 0;
+  n = bw_play_rgba(px, w * h * 4);
+  if (n < w * h * 4) { free(px); return 0; }
+  for (y = 0; y < h; y++) {
+    for (x = 0; x < w; x++) {
+      uint8_t* p;
+      if (abs(x - cx) <= rad && abs(y - cy) <= rad) continue;
+      p = px + ((size_t)y * (size_t)w + (size_t)x) * 4;
+      if (p[0] > 200 && p[1] > 200 && p[2] > 200) c++;
+    }
+  }
+  free(px);
+  return c;
+}
+
 static int white_x(int xmin) {
   int w = 0, h = 0, n, x, y, c = 0;
   uint8_t* px;
@@ -924,6 +944,63 @@ int main(int argc, char** argv) {
   {
     int n = white_x(70);
     printf("PAGE right=%d\n", n);
+    if (n < 8) bad = 1;
+  }
+  bw_play_close();
+
+  snprintf(path, sizeof path, "%s/osc", root);
+  if (!bw_play_open(path, 160, 90) || !bw_play_step(50)) return 1;
+  {
+    int r = 0, g = 0, b = 0;
+    if (!at(80, 45, &r, &g, &b)) return 1;
+    printf("OSC %d %d %d\n", r, g, b);
+    if (r > 40) bad = 1;
+  }
+  bw_play_close();
+
+  snprintf(path, sizeof path, "%s/trail", root);
+  if (!bw_play_open(path, 160, 90) || !bw_play_step(16)) return 1;
+  {
+    int ar = 0, ag = 0, ab = 0, sr = 0, sg = 0, sb = 0;
+    if (!at(70, 45, &ar, &ag, &ab) || !at(40, 20, &sr, &sg, &sb)) return 1;
+    printf("TRAIL along=%d %d %d side=%d %d %d\n", ar, ag, ab, sr, sg, sb);
+    if (ar < 200 || sr > 40) bad = 1;
+  }
+  bw_play_close();
+
+  snprintf(path, sizeof path, "%s/oturb", root);
+  if (!bw_play_open(path, 160, 90) || !bw_play_step(1000)) return 1;
+  {
+    int n = white_out(80, 45, 14);
+    printf("OTURB off=%d\n", n);
+    if (n < 1) bad = 1;
+  }
+  bw_play_close();
+
+  snprintf(path, sizeof path, "%s/ember", root);
+  if (!bw_play_open(path, 160, 90) || !bw_play_step(500)) return 1;
+  {
+    int ar = 0, ag = 0, ab = 0, br = 0, bg = 0, bb = 0;
+    if (!at(70, 53, &ar, &ag, &ab) || !at(20, 53, &br, &bg, &bb)) return 1;
+    printf("EMBER on=%d %d %d off=%d %d %d\n", ar, ag, ab, br, bg, bb);
+    if (ar < 200 || br > 40) bad = 1;
+  }
+  bw_play_close();
+
+  snprintf(path, sizeof path, "%s/note", root);
+  if (!bw_play_open(path, 160, 90)) return 1;
+  {
+    int n = white_x(70);
+    printf("NOTE right=%d\n", n);
+    if (n < 8) bad = 1;
+  }
+  bw_play_close();
+
+  snprintf(path, sizeof path, "%s/notefile", root);
+  if (!bw_play_open(path, 160, 90)) return 1;
+  {
+    int n = white_x(70);
+    printf("FILE right=%d\n", n);
     if (n < 8) bad = 1;
   }
   bw_play_close();

@@ -64,7 +64,11 @@ cc -O2 -o build/m5probe host/m5probe.c host/audio.c host/script.c host/video.c h
   -lpulse-simple -lpulse -lm -ldl -lpthread
 timeout 4 ./build/m5probe fixtures/m5/red.mkv > build/m5probe.out
 python3 tools/check_m5c.py build/m5probe.out
-qjs --std tools/check_web.js
+if command -v qjs >/dev/null 2>&1; then
+  qjs --std tools/check_web.js
+else
+  echo "qjs not on PATH; skipping tools/check_web.js"
+fi
 python3 tools/check_webqml.py
 if [ ! -f fixtures/workshop/15/clip.mkv ]; then
   cp fixtures/m5/red.mkv fixtures/workshop/15/clip.mkv

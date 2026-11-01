@@ -1,6 +1,7 @@
 {
   "material": "materials/p.json",
   "maxcount": 4,
+  "children": [{"type": "emberglow", "name": "glow"}],
   "emitter": [{"name": "layerimage", "rate": 5}],
   "initializer": [{"name": "lifetimerandom", "min": 1, "max": 1}],
   "operator": [{"name": "movement", "gravity": "0 0 0", "drag": 0}],

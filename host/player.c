@@ -43,6 +43,8 @@ int bw_gl_read(uint8_t* dst, int n);
 int bw_gl_export_color(void);
 void* bw_gl_color_image(void);
 const char* bw_gl_log(void);
+int bw_gl_vendor_match(const char* peer);
+int bw_gl_peer_mismatch(void);
 int bw_text_rgba(const char* s, int* w, int* h, uint8_t** rgba);
 void bw_audio_inject(const float* s, int n);
 int bw_audio_samples(float* dst, int cap);
@@ -104,7 +106,19 @@ static Live g_live[MAXL];
 static int g_nlive;
 static int g_miss;
 static uint8_t* g_px;
-static int g_readback = 1;
+/* want is the caller flag. force latches a failed export, a failed import,
+   or a GL renderer that is not the same GPU. BENDWALL_READBACK=1 wins. */
+static int g_want_readback = 1;
+static int g_force_readback;
+
+static int readback_env(void) {
+  const char* e = getenv("BENDWALL_READBACK");
+  return e && e[0] == '1' && e[1] == 0;
+}
+
+static int readback_on(void) {
+  return readback_env() || g_want_readback || g_force_readback;
+}
 static int g_sim_us, g_gl_us, g_read_us;
 static int g_ptr_ok;
 static float g_ptr_x, g_ptr_y;
@@ -525,6 +539,8 @@ typedef struct Part {
   float lx, ly, lastdt;
   uint32_t id, fid;
   int frame;
+  int osc_init;
+  float osc_freq, osc_phase;
   float rx[ROPE_N], ry[ROPE_N], rt[ROPE_N];
   int rn, ri;
 } Part;
@@ -540,6 +556,8 @@ typedef struct Sys {
   int rr;
   float acc;
   uint32_t rng;
+  float op_phase, op_speed;
+  int op_ready;
   Part* p;
 } Sys;
 
@@ -769,6 +787,11 @@ static void spawn_one(Sys* S, const Part* host) {
   p->id = g_pid++;
   if (g_pid == 0) g_pid = 1;
   if (S->spec.has_angv) p->angv = lerand(&S->rng, S->spec.av0, S->spec.av1);
+  if (S->spec.osc) {
+    p->osc_freq = lerand(&S->rng, S->spec.of0, S->spec.of1);
+    p->osc_phase = lerand(&S->rng, S->spec.oph0, S->spec.oph1 + 6.2831853f);
+    p->osc_init = 1;
+  }
   if (S->spec.anim == 1 && S->nframe_tex > 1) {
     float t = lerand(&S->rng, 0.f, (float)S->nframe_tex);
     p->frame = (int)t;
@@ -784,6 +807,30 @@ static void spawn_one(Sys* S, const Part* host) {
   }
   if (S->spec.rope) rope_push(p, p->x, p->y, (float)g_sim);
   emit_followers(S, p);
+}
+
+/* Phase and speed were chosen once. Position is shifted on x, scaled by
+   scale*2, then the normalized curl is masked and added to velocity. */
+static void op_turb_at(Sys* S, Part* p, float dt) {
+  float nx, ny, nz, len, scale, px, py, pz;
+  if (!S || !p || !S->spec.op_turb || !S->op_ready || S->op_speed <= 0.0001f) return;
+  scale = S->spec.op_scale * 2.f;
+  px = p->x + S->op_phase + S->spec.op_time * (float)g_sim;
+  py = p->y;
+  pz = 0.f;
+  px *= scale;
+  py *= scale;
+  pz *= scale;
+  curl_at(px, py, pz, &nx, &ny, &nz);
+  len = sqrtf(nx * nx + ny * ny + nz * nz);
+  if (len > 0.0001f) {
+    nx = nx / len * S->op_speed * S->spec.op_mx;
+    ny = ny / len * S->op_speed * S->spec.op_my;
+  } else {
+    nx = ny = 0.f;
+  }
+  p->vx += nx * dt;
+  p->vy += ny * dt;
 }
 
 static void attract_at(Sys* S, Part* p, float dt) {
@@ -822,6 +869,7 @@ static void integrate_sys(Sys* S, float dt) {
   if (drag < 0.f) drag = 0.f;
   for (i = 0; i < S->n; i++) {
     Part* p = &S->p[i];
+    op_turb_at(S, p, dt);
     p->lastdt = dt;
     if (p->fid) {
       Part* q;
@@ -1107,6 +1155,11 @@ static void particle_tint(const Sys* S, const Part* p, float* sz, float* a, floa
     if (fout > 1.f) fout = 1.f;
     *a *= fin * fout;
   }
+  if (S->spec.osc && p->osc_init) {
+    float cosv = (cosf(p->osc_freq * p->age + p->osc_phase) + 1.f) * 0.5f;
+    float mul = S->spec.os0 + (S->spec.os1 - S->spec.os0) * cosv;
+    *a *= mul;
+  }
   *r = p->r;
   *g = p->g;
   *b = p->b;
@@ -1197,7 +1250,7 @@ static void draw_particles(void) {
     if (S->tex <= 0 && S->nframe_tex < 1) continue;
     if (S->spec.additive) glBlendFunc(GL_SRC_ALPHA, GL_ONE);
     else glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    if (S->spec.rope) {
+    if (S->spec.rope && !S->spec.trail) {
       for (i = 0; i < S->n; i++) {
         float sz, a, r, g, b;
         particle_tint(S, &S->p[i], &sz, &a, &r, &g, &b);
@@ -1223,16 +1276,32 @@ static void draw_particles(void) {
         fw = S->nframe_tex > fr ? S->frame_w[fr] : 1;
         fh = S->nframe_tex > fr ? S->frame_h[fr] : 1;
         aspect = fw > 0 ? (float)fh / (float)fw : 1.f;
-        if (!batch || !inst) {
-          draw_sprite(g_copy_prog, tex,
-                      ox + p->x * cover, oy + p->y * cover,
-                      sz * cover, sz * cover * aspect, p->ang * 57.2957795f, a, r, g, b);
-          continue;
+        {
+          float dw = sz;
+          float dh = sz * aspect;
+          float deg = p->ang * 57.2957795f;
+          float ang = p->ang;
+          if (S->spec.trail) {
+            float spd = sqrtf(p->vx * p->vx + p->vy * p->vy);
+            float stretch = spd * S->spec.trail_len;
+            if (stretch < S->spec.trail_min) stretch = S->spec.trail_min;
+            if (stretch > S->spec.trail_max) stretch = S->spec.trail_max;
+            dw = sz * stretch;
+            if (dw < 0.5f) continue;
+            ang = atan2f(p->vy, p->vx);
+            deg = ang * 57.2957795f;
+          }
+          if (!batch || !inst) {
+            draw_sprite(g_copy_prog, tex,
+                        ox + p->x * cover, oy + p->y * cover,
+                        dw * cover, dh * cover, deg, a, r, g, b);
+            continue;
+          }
+          c = cosf(ang);
+          sn = sinf(ang);
+          hx = dw * cover * 0.5f;
+          hy = dh * cover * 0.5f;
         }
-        c = cosf(p->ang);
-        sn = sinf(p->ang);
-        hx = sz * cover * 0.5f;
-        hy = hx * aspect;
         inst[n * 11 + 0] = ox + p->x * cover;
         inst[n * 11 + 1] = oy + p->y * cover;
         inst[n * 11 + 2] = hx;
@@ -1302,6 +1371,11 @@ static void load_particles(const BwPlan* plan) {
     S->spec.sheets = NULL;
     S->spec.frames = NULL;
     S->rng = 1u + (uint32_t)i * 997u;
+    if (S->spec.op_turb) {
+      S->op_phase = lerand(&S->rng, S->spec.op_p0, S->spec.op_p1);
+      S->op_speed = lerand(&S->rng, S->spec.op_s0, S->spec.op_s1);
+      S->op_ready = 1;
+    }
     cap = S->spec.maxcount;
     if (cap < 0) cap = 0;
     if (cap > MAX_COUNT) cap = MAX_COUNT;
@@ -1405,12 +1479,14 @@ static int draw(void) {
   }
   glDisable(GL_BLEND);
   g_gl_us = (int)(mono_us() - tdraw);
-  if (!g_readback) {
-    bw_gl_export_color();
-    glFlush();
-    g_read_us = 0;
-    bw_gl_end();
-    return 1;
+  if (!readback_on()) {
+    if (!bw_gl_export_color()) g_force_readback = 1;
+    else {
+      glFlush();
+      g_read_us = 0;
+      bw_gl_end();
+      return 1;
+    }
   }
   {
     double tr = mono_us();
@@ -1569,9 +1645,10 @@ int bw_play_open(const char* dir, int w, int h) {
   const char* assets;
   int i, keep_read, opened;
   pthread_mutex_lock(&g_play_mu);
-  keep_read = g_readback;
+  keep_read = g_want_readback;
   play_close_unlocked();
-  g_readback = keep_read;
+  g_want_readback = keep_read;
+  g_force_readback = 0;
   g_ptr_ok = 0;
   g_sim_us = g_gl_us = g_read_us = 0;
   if (w < 8) w = 8;
@@ -1614,6 +1691,7 @@ int bw_play_open(const char* dir, int w, int h) {
     pthread_mutex_unlock(&g_play_mu);
     return 0;
   }
+  if (bw_gl_peer_mismatch()) g_force_readback = 1;
   g_gl = 1;
   bw_audio_live_start();
   if (!g_has_video && bw_gl_begin()) {
@@ -1701,7 +1779,7 @@ int bw_play_rgba(uint8_t* dst, int cap) {
   if (!dst || !g_open) goto rgba_out;
   n = g_w * g_h * 4;
   if (cap < n) goto rgba_out;
-  if (!g_readback || !g_px) {
+  if (!readback_on() || !g_px) {
     uint8_t* next;
     int got;
     if (!bw_gl_begin()) goto rgba_out;
@@ -1723,7 +1801,7 @@ rgba_out:
 
 void bw_play_set_readback(int on) {
   pthread_mutex_lock(&g_play_mu);
-  g_readback = on ? 1 : 0;
+  if (!readback_env()) g_want_readback = on ? 1 : 0;
   pthread_mutex_unlock(&g_play_mu);
 }
 
@@ -1777,9 +1855,17 @@ static int blit_unlocked(void) {
   typedef void (*PFN_TARGET)(GLenum, void*);
   PFN_TARGET target;
   GLint loc;
+  if (g_force_readback || readback_env()) return 0;
   if (!img) return 0;
   cur = eglGetCurrentContext();
   if (cur == EGL_NO_CONTEXT) return 0;
+  {
+    const char* peer = (const char*)glGetString(GL_RENDERER);
+    if (peer && !bw_gl_vendor_match(peer)) {
+      g_force_readback = 1;
+      return 0;
+    }
+  }
   if (cur != ctx) {
     prog = vao = buf = tex = 0;
     ctx = cur;
@@ -1831,7 +1917,13 @@ static int blit_unlocked(void) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
   }
   glBindTexture(GL_TEXTURE_2D, tex);
+  glGetError();
   target(GL_TEXTURE_2D, img);
+  if (glGetError() != GL_NO_ERROR) {
+    g_force_readback = 1;
+    failed = 1;
+    return 0;
+  }
   glUseProgram(prog);
   loc = glGetUniformLocation(prog, "g_Texture0");
   if (loc >= 0) glUniform1i(loc, 0);

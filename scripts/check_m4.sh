@@ -57,8 +57,45 @@ if "videoVolume" not in main or "return 1" not in main:
 if "videoMuted" not in main or "return !root.videoOptIn()" not in main:
     raise SystemExit("main.qml does not mute video unless opted in")
 if "wallpaperAudio" not in main:
-    raise SystemExit("main.qml has no watch audio opt-in")
+    raise SystemExit("main.qml does not keep the watch audio opt-in")
+meta = pathlib.Path("kde/bendwall/metadata.json").read_text()
+if '"KPackageStructure": "Plasma/Wallpaper"' not in meta:
+    raise SystemExit("metadata KPackageStructure")
+if '"X-Plasma-API-Minimum-Version": "6.0"' not in meta:
+    raise SystemExit("metadata api")
+if "com.philip.bendwall" not in meta:
+    raise SystemExit("metadata id")
+if '<entry name="Item"' not in xml:
+    raise SystemExit("main.xml Item")
+if "property string cfg_Item" not in qml:
+    raise SystemExit("cfg_Item")
+if "import org.kde.plasma.plasmoid" not in main:
+    raise SystemExit("main.qml does not import org.kde.plasma.plasmoid")
+if "wallpaper.configuration" in main:
+    raise SystemExit("main.qml still uses wallpaper.configuration")
+if "configuration.Item" not in main or "configuration.VideoVolume" not in main or "configuration.VideoMute" not in main:
+    raise SystemExit("main.qml does not read configuration")
+import re
+if not re.search(r"(?m)^WallpaperItem\s*\{", main):
+    raise SystemExit("main.qml root is not WallpaperItem")
+head = main.split("Frame {", 1)[0]
+if "anchors.fill" in head:
+    raise SystemExit("WallpaperItem root anchors itself")
+stub = pathlib.Path("kde/bendwall/contents/ui/WallpaperItem.qml")
+if stub.exists():
+    raise SystemExit("WallpaperItem stub is inside the wallpaper package")
 print("VOLUME PASS")
+PY
+./build/kde/bendwall-preview --wallpaper-root > build/wallroot.out
+python3 - <<'PY'
+import pathlib
+text = pathlib.Path("build/wallroot.out").read_text()
+if "WALLROOT fail" in text:
+    raise SystemExit(text)
+if "WALLROOT static" not in text and "WallpaperItem" not in text:
+    raise SystemExit(text)
+print("WALLROOT PASS")
+print(text.strip())
 PY
 python3 - <<'PY'
 import pathlib, sys

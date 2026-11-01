@@ -1,9 +1,9 @@
 import QtQuick
+import org.kde.plasma.plasmoid
 import com.philip.bendwall
 
-Item {
+WallpaperItem {
     id: root
-    anchors.fill: parent
 
     function wallpaperIsWeb() {
         try {
@@ -16,7 +16,7 @@ Item {
 
     function currentId() {
         try {
-            var configured = wallpaper.configuration.Item
+            var configured = configuration.Item
             if (configured && String(configured).length > 0)
                 return String(configured)
         } catch (e) {
@@ -59,7 +59,7 @@ Item {
         live: true
         videoVolume: {
             try {
-                var v = wallpaper.configuration.VideoVolume
+                var v = configuration.VideoVolume
                 if (v === undefined || v === null || v === "")
                     return 1
                 var n = Number(v)
@@ -72,7 +72,7 @@ Item {
         }
         videoMuted: {
             try {
-                var m = wallpaper.configuration.VideoMute
+                var m = configuration.VideoMute
                 if (m === undefined || m === null || m === "")
                     return !root.videoOptIn()
                 if (m === false || m === 0 || m === "false" || m === "0")

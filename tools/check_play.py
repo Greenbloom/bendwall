@@ -248,6 +248,24 @@ if int(frame.group(3)) < 200 or int(frame.group(4)) > 40 or int(frame.group(7)) 
 page = int(grab(r"PAGE right=(\d+)").group(1))
 if page < 8:
     raise SystemExit(f"placed text page is blank ({page})")
+osc = [int(x) for x in grab(r"OSC (\d+) (\d+) (\d+)").groups()]
+if osc[0] > 40:
+    raise SystemExit(f"oscillatealpha {osc}")
+trail = grab(r"TRAIL along=(\d+) (\d+) (\d+) side=(\d+) (\d+) (\d+)")
+if int(trail.group(1)) < 200 or int(trail.group(4)) > 40:
+    raise SystemExit(trail.group(0))
+oturb = int(grab(r"OTURB off=(\d+)").group(1))
+if oturb < 1:
+    raise SystemExit("turbulence operator did not move the sprite")
+ember = grab(r"EMBER on=(\d+) (\d+) (\d+) off=(\d+) (\d+) (\d+)")
+if int(ember.group(1)) < 200 or int(ember.group(4)) > 40:
+    raise SystemExit(ember.group(0))
+note = int(grab(r"NOTE right=(\d+)").group(1))
+if note < 8:
+    raise SystemExit(f"user text is blank ({note})")
+filed = int(grab(r"FILE right=(\d+)").group(1))
+if filed < 8:
+    raise SystemExit(f"text file is blank ({filed})")
 live = grab(
     r"LIVECPU back=([0-9.]+) sim=(\d+) gl=(\d+) read=(\d+) "
     r"present=([0-9.]+) psim=(\d+) pgl=(\d+) pread=(\d+) export=(\d+)"
@@ -257,8 +275,12 @@ if int(live.group(8)) != 0:
 blit = grab(r"BLIT ok=(\d+) (\d+) (\d+) (\d+)")
 if blit.group(1) != "1" or int(blit.group(4)) < 10:
     raise SystemExit(blit.group(0))
+if "bendwall: renderer " not in err:
+    raise SystemExit("renderer was not logged\n" + err)
 if "bendwall: unsupported particle emitter layerimage" not in err:
     raise SystemExit("layerimage was not logged\n" + err)
+if "bendwall: unsupported particle child emberglow" not in err:
+    raise SystemExit("emberglow without a file was not logged\n" + err)
 if "materials/particle/gone.tex" not in err:
     raise SystemExit("named particle miss was not logged\n" + err)
 if "(no path)" not in err:

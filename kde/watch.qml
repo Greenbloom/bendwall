@@ -12,7 +12,14 @@ Window {
     color: "#121418"
 
     Loader {
+        id: page
         anchors.fill: parent
         source: Qt.resolvedUrl("bendwall/contents/ui/main.qml")
+        /* Plasmashell sizes WallpaperItem. The preview window does that here
+           so the root does not anchors.fill itself. */
+        onLoaded: {
+            item.width = Qt.binding(function () { return page.width })
+            item.height = Qt.binding(function () { return page.height })
+        }
     }
 }

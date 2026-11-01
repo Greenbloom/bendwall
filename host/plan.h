@@ -81,6 +81,15 @@ typedef struct BwPartSys {
     float sx, sy, deg;
     int rope;
     float rope_len;
+    /* turbulence operator. Phase and speed are chosen once per system. */
+    int op_turb;
+    float op_scale, op_s0, op_s1, op_time, op_mx, op_my, op_mz, op_p0, op_p1;
+    /* oscillatealpha. The cosine mixes scalemin and scalemax onto the faded alpha. */
+    int osc;
+    float of0, of1, os0, os1, oph0, oph1;
+    /* spritetrail. Quad length is size * clamp(speed * length, min, max). */
+    int trail;
+    float trail_len, trail_min, trail_max;
     int anim;
     float seqmul;
     float size_exp;

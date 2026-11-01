@@ -1,0 +1,16 @@
+{
+  "material": "materials/p.json",
+  "maxcount": 2,
+  "starttime": 0,
+  "emitter": [{"name": "sphererandom", "rate": 0, "instantaneous": 1, "distancemax": 0, "speedmin": 0, "speedmax": 0}],
+  "initializer": [
+    {"name": "lifetimerandom", "min": 4, "max": 4},
+    {"name": "sizerandom", "min": 16, "max": 16},
+    {"name": "velocityrandom", "min": "0 0 0", "max": "0 0 0"}
+  ],
+  "operator": [
+    {"name": "movement", "gravity": "0 0 0", "drag": 0},
+    {"name": "turbulence", "scale": 0.02, "speedmin": 40, "speedmax": 40, "timescale": 0, "phasemin": 0, "phasemax": 0, "mask": "1 1 0"}
+  ],
+  "renderer": [{"name": "sprite"}]
+}

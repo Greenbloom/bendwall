@@ -2301,9 +2301,10 @@ static int known_part(const char* section, const char* name) {
             || !strcmp(name, "angularvelocityrandom") || !strcmp(name, "turbulentvelocityrandom");
     if (!strcmp(section, "operator"))
         return !strcmp(name, "movement") || !strcmp(name, "alphafade") || !strcmp(name, "sizechange")
-            || !strcmp(name, "colorchange") || !strcmp(name, "angularmovement") || !strcmp(name, "controlpointattract");
+            || !strcmp(name, "colorchange") || !strcmp(name, "angularmovement") || !strcmp(name, "controlpointattract")
+            || !strcmp(name, "turbulence") || !strcmp(name, "oscillatealpha");
     if (!strcmp(section, "renderer"))
-        return !strcmp(name, "sprite") || !strcmp(name, "ropetrail");
+        return !strcmp(name, "sprite") || !strcmp(name, "ropetrail") || !strcmp(name, "spritetrail");
     if (!strcmp(section, "child")) return !strcmp(name, "eventfollow");
     return 0;
 }
@@ -2332,6 +2333,19 @@ static void audit_part(const Jv* doc) {
                 name[0] = 0;
                 if (!j_field(&item, "type", name, sizeof name)) j_name(&item, name, sizeof name);
                 lower_buf(name);
+                /* emberglow is a follow only when it names a particle file.
+                   With no file there is no motion to copy, so it stays unsupported. */
+                if (!strcmp(name, "emberglow")) {
+                    char path[512];
+                    path[0] = 0;
+                    if (j_field(&item, "particle", path, sizeof path) && path[0] && strcmp(path, "None")
+                        && (strchr(path, '/') || strstr(path, ".json")))
+                        continue;
+                    path[0] = 0;
+                    if (j_field(&item, "name", path, sizeof path) && path[0]
+                        && (strchr(path, '/') || strstr(path, ".json")))
+                        continue;
+                }
                 if (name[0] && !known_part("child", name)) part_gap("child", name);
             }
         }
@@ -2431,13 +2445,16 @@ static int take_particle(BwPlan* plan, const char* dir, const char* assets, cons
     if (!present) sys.speed1 = sys.speed0;
     sign = j_num(&em, "sign", 1.f, &present);
     if (sys.box) {
-        /* Absent distancemax is the 256 cube, not the sphere's scalar 0. */
+        /* Absent distancemax is (256, 256, 0), not the sphere's scalar 0. */
         if (!j_box(&em, "distancemin", &sys.bminx, &sys.bminy, &sys.bminz)
             && !j_box(&em, "mindistance", &sys.bminx, &sys.bminy, &sys.bminz))
             sys.bminx = sys.bminy = sys.bminz = 0.f;
         if (!j_box(&em, "distancemax", &sys.bmaxx, &sys.bmaxy, &sys.bmaxz)
-            && !j_box(&em, "maxdistance", &sys.bmaxx, &sys.bmaxy, &sys.bmaxz))
-            sys.bmaxx = sys.bmaxy = sys.bmaxz = 256.f;
+            && !j_box(&em, "maxdistance", &sys.bmaxx, &sys.bmaxy, &sys.bmaxz)) {
+            /* Absent max is 256 on x and y. z stays 0, the same as directions. */
+            sys.bmaxx = sys.bmaxy = 256.f;
+            sys.bmaxz = 0.f;
+        }
         if (!j_vec(&em, "directions", &dx, &dy, &dz)) {
             dx = 1.f;
             dy = 1.f;
@@ -2481,6 +2498,9 @@ static int take_particle(BwPlan* plan, const char* dir, const char* assets, cons
         sys.size0 = num_key(&block, "min", "minimum", sys.size0, &present);
         sys.size1 = num_key(&block, "max", "maximum", sys.size0, &present);
         if (!present) sys.size1 = sys.size0;
+        /* The quad width is half the authored range. Overrides still multiply after this. */
+        sys.size0 *= 0.5f;
+        sys.size1 *= 0.5f;
         sys.size_exp = j_num(&block, "exponent", 1.f, &present);
         if (!present || sys.size_exp == 0.f) sys.size_exp = 1.f;
     }
@@ -2644,6 +2664,37 @@ static int take_particle(BwPlan* plan, const char* dir, const char* assets, cons
         if (sys.attract_thr < 0.f) sys.attract_thr = 0.f;
         sys.has_attract = sys.attract != 0.f;
     }
+    if (block_named(&doc, "operator", "turbulence", &block)) {
+        sys.op_turb = 1;
+        sys.op_scale = j_num(&block, "scale", 0.005f, &present);
+        if (!present) sys.op_scale = 0.005f;
+        sys.op_s0 = num_key(&block, "speedmin", "minspeed", 500.f, &present);
+        if (!present) sys.op_s0 = 500.f;
+        sys.op_s1 = num_key(&block, "speedmax", "maxspeed", 1000.f, &present);
+        if (!present) sys.op_s1 = 1000.f;
+        sys.op_time = j_num(&block, "timescale", 0.01f, &present);
+        if (!present) sys.op_time = 0.01f;
+        if (!j_vec(&block, "mask", &sys.op_mx, &sys.op_my, &sys.op_mz)) {
+            sys.op_mx = 1.f;
+            sys.op_my = 1.f;
+            sys.op_mz = 0.f;
+        }
+        sys.op_p0 = num_key(&block, "phasemin", "minphase", 0.f, &present);
+        sys.op_p1 = num_key(&block, "phasemax", "maxphase", 0.f, &present);
+        if (!present) sys.op_p1 = 0.f;
+    }
+    if (block_named(&doc, "operator", "oscillatealpha", &block)) {
+        sys.osc = 1;
+        sys.of0 = num_key(&block, "frequencymin", "minfrequency", 0.f, &present);
+        sys.of1 = num_key(&block, "frequencymax", "maxfrequency", 10.f, &present);
+        if (!present) sys.of1 = 10.f;
+        sys.os0 = num_key(&block, "scalemin", "minscale", 0.f, &present);
+        sys.os1 = num_key(&block, "scalemax", "maxscale", 1.f, &present);
+        if (!present) sys.os1 = 1.f;
+        sys.oph0 = num_key(&block, "phasemin", "minphase", 0.f, &present);
+        sys.oph1 = num_key(&block, "phasemax", "maxphase", 6.2831853f, &present);
+        if (!present) sys.oph1 = 6.2831853f;
+    }
     sys.start = j_num(&doc, "starttime", 0.f, &present);
     if (sys.start < 0.f) sys.start = 0.f;
     {
@@ -2667,6 +2718,17 @@ static int take_particle(BwPlan* plan, const char* dir, const char* assets, cons
         sys.rope_len = j_num(&block, "length", 0.05f, &present);
         if (!present) sys.rope_len = 0.05f;
         if (sys.rope_len < 0.f) sys.rope_len = 0.f;
+    }
+    if (block_named(&doc, "renderer", "spritetrail", &block)) {
+        sys.trail = 1;
+        sys.trail_len = j_num(&block, "length", 0.05f, &present);
+        if (!present) sys.trail_len = 0.05f;
+        sys.trail_max = j_num(&block, "maxlength", 10.f, &present);
+        if (!present) sys.trail_max = 10.f;
+        sys.trail_min = j_num(&block, "minlength", 0.f, &present);
+        if (!present) sys.trail_min = 0.f;
+        if (sys.trail_len < 0.f) sys.trail_len = 0.f;
+        if (sys.trail_max < sys.trail_min) sys.trail_max = sys.trail_min;
     }
     sys.maxcount = (int)(j_num(&doc, "maxcount", 32.f, &present) + 0.5f);
     if (sys.maxcount < 1) sys.maxcount = 1;
@@ -2697,6 +2759,8 @@ static int take_particle(BwPlan* plan, const char* dir, const char* assets, cons
         sys.vmaxz *= mul;
         sys.turb_s0 *= mul;
         sys.turb_s1 *= mul;
+        sys.op_s0 *= mul;
+        sys.op_s1 *= mul;
         mul = over_mul(obj, "size");
         sys.size0 *= mul;
         sys.size1 *= mul;
@@ -2854,8 +2918,20 @@ static int take_particle(BwPlan* plan, const char* dir, const char* assets, cons
                 ctype[0] = cpath[0] = 0;
                 if (!j_field(&kid, "type", ctype, sizeof ctype)) continue;
                 lower_buf(ctype);
-                if (strcmp(ctype, "eventfollow") != 0) continue;
-                if (!j_field(&kid, "name", cpath, sizeof cpath) || !cpath[0]) continue;
+                if (!strcmp(ctype, "eventfollow")) {
+                    if (!j_field(&kid, "name", cpath, sizeof cpath) || !cpath[0]) continue;
+                } else if (!strcmp(ctype, "emberglow")) {
+                    /* Same follow as eventfollow when the child names a particle file. */
+                    cpath[0] = 0;
+                    if (!j_field(&kid, "particle", cpath, sizeof cpath) || !cpath[0] || !strcmp(cpath, "None")
+                        || (!strchr(cpath, '/') && !strstr(cpath, ".json"))) {
+                        cpath[0] = 0;
+                        if (!j_field(&kid, "name", cpath, sizeof cpath) || !cpath[0]
+                            || (!strchr(cpath, '/') && !strstr(cpath, ".json")))
+                            continue;
+                    }
+                } else
+                    continue;
                 take_particle(plan, dir, assets, obj, props, cpath, idx, 1, depth + 1);
             }
         }
@@ -2881,14 +2957,50 @@ static int text_value(const Jv* obj, char* value, int cap) {
     return 1;
 }
 
-static void take_text(BwPlan* plan, const Jv* obj) {
+/* A text string that is a package path, not the letters themselves. */
+static int text_file(const char* dir, const char* assets, const char* rel, char* out, int cap) {
+    uint8_t* b = NULL;
+    int n = 0, i, keep;
+    if (!rel || !rel[0] || !out || cap < 2) return 0;
+    if (strchr(rel, '\n') || strchr(rel, ' ')) return 0;
+    if (!strchr(rel, '/') && !ends_with(rel, ".txt")) return 0;
+    if (!read_rel(dir, assets, rel, "", &b, &n) || !b || n < 1) {
+        free(b);
+        return 0;
+    }
+    keep = n;
+    if (keep > 4096) keep = 4096;
+    for (i = 0; i < keep; i++) {
+        unsigned char c = b[i];
+        if (c == 0 || (c < 9) || (c > 13 && c < 32)) {
+            free(b);
+            return 0;
+        }
+    }
+    if (keep >= cap) keep = cap - 1;
+    memcpy(out, b, (size_t)keep);
+    out[keep] = 0;
+    free(b);
+    return out[0] != 0;
+}
+
+static void take_text(BwPlan* plan, const char* dir, const char* assets, const Jv* obj, const PropTab* props) {
     char value[1024];
+    char filebody[1024];
+    Jv t;
     float x, y, z;
     size_t n;
     int placed;
     uint8_t* px = NULL;
     int tw = 0, th = 0;
-    if (!text_value(obj, value, (int)sizeof value)) return;
+    value[0] = 0;
+    if (!j_obj_get(obj, "text", &t)) return;
+    /* it.user("text"): a project property wins over the inline value. */
+    if (!(t.kind == 3 && resolve_user(props, &t, value, (int)sizeof value) && value[0])) {
+        if (!text_value(obj, value, (int)sizeof value)) return;
+    }
+    if (text_file(dir, assets, value, filebody, (int)sizeof filebody))
+        snprintf(value, sizeof value, "%s", filebody);
     plan->has_text = 1;
     /* Origin or size is the object's rectangle. Corner text is only the
        strings that have neither, so a page is not a 7px HUD line. */
@@ -2926,7 +3038,7 @@ static void walk_scene(BwPlan* plan, const char* dir, const char* assets, const 
             Jv obj;
             if (!j_arr_at(&gen, i, &obj) || obj.kind != 3) continue;
             if (!visible_obj(&obj)) continue;
-            take_text(plan, &obj);
+            take_text(plan, dir, assets, &obj, props);
             if (j_obj_get(&obj, "image", &ortho)) take_image(plan, dir, assets, &obj, props);
             if (j_obj_get(&obj, "particle", &ortho)) take_particle(plan, dir, assets, &obj, props, NULL, -1, 0, 0);
         }

@@ -1,0 +1,5 @@
+{
+  "type": "scene",
+  "file": "scene.json",
+  "general": {"properties": {"note": {"type": "text", "value": "USER NOTE\nsecond line of the property"}}}
+}

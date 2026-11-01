@@ -17,6 +17,8 @@ static int (*bw_prog)(const char*, const char*);
 static int (*bw_eye)(int, const char*);
 static int (*bw_f1)(int, const char*, uint32_t);
 static int (*bw_f2)(int, const char*, uint32_t, uint32_t);
+static int (*bw_fv)(int, const char*, uint32_t, uint32_t, uint32_t, uint32_t);
+static int (*bw_px)(int, int, int);
 static int (*bw_quad)(int, int, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
 static int (*bw_png)(const char*);
 static const char* (*bw_log)(void);
@@ -41,6 +43,8 @@ static void bw_load(void) {
   bw_eye = dlsym(bw_so, "bw_gl_eye");
   bw_f1 = dlsym(bw_so, "bw_gl_f1");
   bw_f2 = dlsym(bw_so, "bw_gl_f2");
+  bw_fv = dlsym(bw_so, "bw_gl_fv");
+  bw_px = dlsym(bw_so, "bw_gl_px");
   bw_quad = dlsym(bw_so, "bw_gl_quad");
   bw_png = dlsym(bw_so, "bw_gl_png");
   bw_log = dlsym(bw_so, "bw_gl_log");
@@ -125,6 +129,23 @@ Term gl_f2_run(Env e, Term* f, IoWork* w) {
   free(name);
   return (Term)(uint32_t)r;
 }
+Term gl_fv_run(Env e, Term* f, IoWork* w) {
+  u64 n = 0;
+  char* name;
+  int r;
+  (void)w;
+  bw_load();
+  name = io_cstr(e, f[1], &n);
+  r = (bw_fv && name) ? bw_fv((int)u32_of(f[0]), name, u32_of(f[2]), u32_of(f[3]), u32_of(f[4]), u32_of(f[5])) : 0;
+  free(name);
+  return (Term)(uint32_t)r;
+}
+Term gl_px_run(Env e, Term* f, IoWork* w) {
+  (void)e; (void)w;
+  bw_load();
+  if (!bw_px) return (Term)0;
+  return (Term)(uint32_t)bw_px((int)u32_of(f[0]), (int)u32_of(f[1]), (int)u32_of(f[2]));
+}
 Term gl_quad_run(Env e, Term* f, IoWork* w) {
   (void)e; (void)w;
   bw_load();
@@ -181,6 +202,12 @@ static void __attribute__((constructor)) gl_f1_use(void) { io_eff(CID(gl_f1), gl
 #endif
 #ifdef CID(gl_f2)
 static void __attribute__((constructor)) gl_f2_use(void) { io_eff(CID(gl_f2), gl_f2_run); }
+#endif
+#ifdef CID(gl_fv)
+static void __attribute__((constructor)) gl_fv_use(void) { io_eff(CID(gl_fv), gl_fv_run); }
+#endif
+#ifdef CID(gl_px)
+static void __attribute__((constructor)) gl_px_use(void) { io_eff(CID(gl_px), gl_px_run); }
 #endif
 #ifdef CID(gl_quad)
 static void __attribute__((constructor)) gl_quad_use(void) { io_eff(CID(gl_quad), gl_quad_run); }

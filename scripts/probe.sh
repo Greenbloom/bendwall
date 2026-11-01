@@ -6,6 +6,7 @@
 set -e
 cd "$(dirname "$0")/.."
 ROOT="${1:-${BENDWALL_WORKSHOP:-$HOME/.local/share/Steam/steamapps/workshop/content/431960}}"
+export BENDWALL_ASSETS="${BENDWALL_ASSETS:-$HOME/.local/share/Steam/steamapps/common/wallpaper_engine/assets}"
 export PATH="$HOME/.bend/bin:$PATH"
 export BEND_NO_TELEMETRY=1
 export BENDWALL_NATIVE="${BENDWALL_NATIVE:-$PWD/host/libbendwall.so}"
@@ -14,7 +15,13 @@ if [ ! -f host/libbendwall.so ]; then
   scripts/lib.sh
 fi
 python3 tools/probe_manifest.py "$ROOT" build/probe-manifest.json
-if [ ! -x build/probe ] || [ src/probe.bend -nt build/probe ] || [ src/scene.bend -nt build/probe ] || [ src/av.bend -nt build/probe ]; then
+rebuild=0
+for f in src/probe.bend src/scene.bend src/av.bend src/vfs.bend src/gaps.bend t_probe.bend; do
+  if [ "$f" -nt build/probe ]; then
+    rebuild=1
+  fi
+done
+if [ ! -x build/probe ] || [ "$rebuild" = 1 ]; then
   bend t_probe.bend -o build/probe
 fi
 ./build/probe | tee build/probe.out

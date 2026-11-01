@@ -1,0 +1,23 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>bendwall</title>
+<script>
+window.bendwallSeen = { props: 0, audio: 0, left: 0 };
+function arm() {
+  if (typeof wallpaperRegisterAudioListener !== "function") return;
+  wallpaperRegisterAudioListener(function (samples) {
+    window.bendwallSeen.audio = samples ? samples.length : 0;
+    window.bendwallSeen.left = samples && samples.length ? samples[0] : 0;
+  });
+  if (wallpaperPropertyListener && wallpaperPropertyListener.applyUserProperties) {
+    var orig = wallpaperPropertyListener.applyUserProperties;
+    wallpaperPropertyListener.applyUserProperties = function (props) {
+      orig(props);
+      var n = 0, k;
+      for (k in props) n++;
+      window.bendwallSeen.props = n;
+    };
+  }
+}
+arm();
+</script>

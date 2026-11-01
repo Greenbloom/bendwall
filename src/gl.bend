@@ -39,6 +39,14 @@ def gl_f2(prog: U32, name: String, a: U32, b: U32) -> IO(U32):
   import "./eff_gl.c"
   import "./eff_gl.js"
 
+def gl_fv(prog: U32, name: String, a: U32, b: U32, c: U32, d: U32) -> IO(U32):
+  import "./eff_gl.c"
+  import "./eff_gl.js"
+
+def gl_px(tex: U32, x: U32, y: U32) -> IO(U32):
+  import "./eff_gl.c"
+  import "./eff_gl.js"
+
 def gl_quad(prog: U32, tex: U32, x0: U32, y0: U32, x1: U32, y1: U32, u0: U32, v0: U32, u1: U32, v1: U32) -> IO(U32):
   import "./eff_gl.c"
   import "./eff_gl.js"

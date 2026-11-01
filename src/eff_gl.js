@@ -7,6 +7,8 @@ function gl_prog() { throw new Error("C lane only"); }
 function gl_eye() { throw new Error("C lane only"); }
 function gl_f1() { throw new Error("C lane only"); }
 function gl_f2() { throw new Error("C lane only"); }
+function gl_fv() { throw new Error("C lane only"); }
+function gl_px() { throw new Error("C lane only"); }
 function gl_quad() { throw new Error("C lane only"); }
 function gl_png() { throw new Error("C lane only"); }
 function gl_log() { throw new Error("C lane only"); }
@@ -19,6 +21,8 @@ io_eff(CID(gl_prog), gl_prog);
 io_eff(CID(gl_eye), gl_eye);
 io_eff(CID(gl_f1), gl_f1);
 io_eff(CID(gl_f2), gl_f2);
+io_eff(CID(gl_fv), gl_fv);
+io_eff(CID(gl_px), gl_px);
 io_eff(CID(gl_quad), gl_quad);
 io_eff(CID(gl_png), gl_png);
 io_eff(CID(gl_log), gl_log);

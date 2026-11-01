@@ -1,5 +1,13 @@
 /* SceneScript host. Bend has no JavaScript runtime; QuickJS runs update(). */
-#include <quickjs.h>
+#if defined(__has_include)
+#  if __has_include(<quickjs/quickjs.h>)
+#    include <quickjs/quickjs.h>
+#  else
+#    include <quickjs.h>
+#  endif
+#else
+#  include <quickjs.h>
+#endif
 #include <stdlib.h>
 #include <string.h>
 

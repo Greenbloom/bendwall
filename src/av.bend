@@ -10,3 +10,7 @@ def av_cap() -> IO(U32):
 def av_video(path: String) -> IO(U32):
   import "./eff_av.c"
   import "./eff_av.js"
+
+def av_tex(path: String, index: U32) -> IO(U32):
+  import "./eff_av.c"
+  import "./eff_av.js"

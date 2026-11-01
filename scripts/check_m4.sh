@@ -22,5 +22,8 @@ QT_QPA_PLATFORM=offscreen ./build/kde/bendwall-preview --grab \
   "$PWD/fixtures/m2/base/project.json" "$PWD/fixtures/workshop" \
   "$PWD/build/m4-grab.png" "$PWD/build/kde"
 python3 tools/check_grab.py build/m4-grab.png
-cp -f build/m4-grab.png /opt/cursor/artifacts/m4-preview.png
+python3 tools/check_webqml.py
+if [ -d /opt/cursor/artifacts ]; then
+  cp -f build/m4-grab.png /opt/cursor/artifacts/m4-preview.png
+fi
 echo M4 PASS

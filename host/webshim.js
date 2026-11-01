@@ -1,5 +1,5 @@
 /* Wallpaper Engine web host surface, from REA §12.
-   QtWebEngine is not linked. This is the page-side API a host would inject. */
+   The Plasma package injects this script into the page at document creation. */
 var bendwallProps = {};
 var bendwallAudioFn = null;
 var bendwallLastAudio = null;

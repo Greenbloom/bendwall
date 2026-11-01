@@ -22,3 +22,6 @@ def main() -> IO(Unit):
   do IO<Unit>:
     src : String <- readf("fixtures/m5/spark.json")
     IO.print(Pt.run(src))
+    IO.print("\n")
+    more : String <- readf("fixtures/m5/more.json")
+    IO.print(Pt.run_more(more))

@@ -1,0 +1,10 @@
+{
+  "emitter": [{"name": "sphererandom", "speedmin": 2}],
+  "initializer": [{"name": "lifetimerandom", "min": 4}],
+  "operator": [
+    {"name": "movement", "gravity": "0 -1 0", "drag": 0},
+    {"name": "sizechange", "rate": 1},
+    {"name": "angularmovement", "speed": 90},
+    {"name": "colorchange", "rate": 1}
+  ]
+}

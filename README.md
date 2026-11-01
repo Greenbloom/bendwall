@@ -18,15 +18,19 @@ Synthetic fixtures stand in for Workshop files, so the checks run without a Stea
 
 The headless frame is yellow on the left, cyan on the right, with a yellow sprite on the cyan half. That is the effect pass (`TINT`), the camera, and parallax, drawn by EGL on llvmpipe.
 
-Particles: one spark starts at the origin with speed 2 and gravity `(0, -1)`. After two steps of `dt = 1` it is at `(4, -1)` with alpha `0.5`.
+Particles: one spark starts at the origin with speed 2 and gravity `(0, -1)`. After two steps of `dt = 1` it is at `(4, -1)` with alpha `0.5`. `sizechange`, `angularmovement`, and `colorchange` add their rate each step: size `3`, angle `180`, color `2`.
 
-Audio: a 16-point DFT of a constant signal has bin 0 equal to 16 and the other bins under `0.05`. A cosine at bin 2 peaks at bin 2. `ln(16) = 4 ln(2)`. Pulse capture returns a count; samples stay in C. With no Pulse server the count is 0.
+Audio: a 16-point DFT of a constant signal has bin 0 equal to 16 and the other bins under `0.05`. A cosine at bin 2 peaks at bin 2. `ln(16) = 4 ln(2)`. Each draw uploads four `g_AudioSpectrum` bands with `glUniform1fv`. The headless proof sets band 0 to `1.0` and the fragment shader paints red. Pulse capture returns a count; samples stay in C. With no Pulse server the count is 0, and a scene pass uploads zeros.
 
-SceneScript: QuickJS runs `update(value)` and a bare `return value;` body.
+SceneScript: QuickJS runs `update(value)` and a bare `return value;` body. The include is `<quickjs/quickjs.h>` when that header exists, which covers the Arch layout (`/usr/include/quickjs/`) and the Debian layout.
 
-Video: libav decodes the first frame of a synthetic red clip.
+Video: libav decodes a chosen frame and uploads it as a GL texture. A synthetic two-frame clip is red, then green.
 
-Web: `host/webshim.js` implements `wallpaperPropertyListener.applyUserProperties` and `wallpaperRegisterAudioListener` (128 floats, left then right). Proven with `qjs`. There is no Qt WebEngine on this image, so a web wallpaper is `partial web`.
+Web: `host/webshim.js` implements `wallpaperPropertyListener.applyUserProperties` and `wallpaperRegisterAudioListener` (128 floats, left then right). Proven with `qjs`. The Plasma package loads `WebLayer.qml` when `wallpaperKind` is `web`: a `WebEngineView` injects the shim at document creation and calls `bendwallApplyProperties` plus `bendwallPushAudio` on load and every 33 ms. The offscreen harness does not import Qt WebEngine. This image has no Qt WebEngine module, so the QML is checked as source. A web item is `loaded`.
+
+Packed scenes: `scene.pkg` and `gifscene.pkg` are read by the same pkg table as loose files. A missing relative path is then read from `BENDWALL_ASSETS`. A project with an empty `type` and a dependency is a preset and follows that base item once. The headless 32×32 frame still matches when the scene and the tex files come from `scene.pkg` and the material and shaders come only from the assets directory.
+
+Text layers rasterize with a 5×7 bitmap into a GL texture. Models stay `partial model`: the `.mdl` container was not decoded.
 
 Workshop probe, from the synthetic tree:
 
@@ -34,15 +38,21 @@ Workshop probe, from the synthetic tree:
 10 loaded
 11 partial particle
 12 unsupported application
-13 partial web
+13 loaded
 14 unsupported dependency
-15 partial playback
+15 loaded
 16 unsupported scene
 18 unsupported video
 19 partial model
+20 loaded
+21 loaded
+22 loaded
+23 partial particle effect:tint effect:pulse
+24 loaded
+26 loaded
 ```
 
-`loaded` means an image scene Bendwall can draw. `partial` names the feature that is only partly run. `unsupported` names the feature that blocks playback (`application`, a missing preset dependency, a missing scene, a video that does not decode).
+`loaded` means the item can run: an image scene, a packed scene, a preset of one, a web page, or a video that decodes. `partial` names the object and effect types the probe still reports (`particle`, `model`, `sound`, `light`, and each `effects/<name>/`). `unsupported` names what blocks playback (`application`, a missing preset dependency, a missing scene, a video that does not decode). Item 22 is a typeless preset of the web item 13. Item 24 is a scene file that exists only under the assets folder. Item 26 is a text layer.
 
 ## Bend and the host
 
@@ -54,10 +64,11 @@ Bend owns parsing, the scene model, preset and user-property resolution, shader 
 | `host/native.c` | C | libpng and libjpeg. Bend has no image decoders |
 | `host/gl.c` | C | EGL and OpenGL. Confirmed: the Bend base library has no GL effect |
 | `host/audio.c` | C | Pulse simple API. A one-second alarm so a missing server cannot stall the frame |
-| `host/video.c` | C | libav first-frame decode |
+| `host/video.c` | C | libav decode of frame N, uploaded with the GL texture call |
+| `host/text.c` | C | 5×7 bitmap. Bend has no font rasterizer |
 | `host/script.c` | C | QuickJS. Bend has no JavaScript runtime |
-| `host/webshim.js` | JavaScript | the page-side API from REA §12. The host would inject it |
-| `kde/` | C++ and QML | Plasma 6 is Qt. Bend has no Qt binding |
+| `host/webshim.js` | JavaScript | the page-side API from REA §12, injected by the wallpaper |
+| `kde/` | C++ and QML | Plasma 6 is Qt. Bend has no Qt binding. Web items use Qt WebEngine |
 
 A print-only Bend shared library, built the way the capabilities note describes (`bend -o` then `clang -shared -Dmain=bend_main`), returned from `bend_main` twice on Bend 2.0.39. The older lz4 host exits the process when its input file is missing, so that hang was not reproduced. The wallpaper still runs as one long-lived process: a frame is an OpenGL texture, not a Bend list, and Plasma cannot call into Bend's runtime.
 
@@ -89,10 +100,10 @@ sudo pacman -S --needed base-devel cmake \
   qt6-base qt6-declarative qt6-wayland \
   extra-cmake-modules plasma-workspace \
   ffmpeg libpulse pipewire quickjs \
-  libpng libjpeg-turbo mesa
+  libpng libjpeg-turbo mesa qt6-webengine
 ```
 
-`qt6-webengine` is optional. Without it, web wallpapers stay `partial web`.
+`qt6-webengine` is what plays a web wallpaper. Image scenes do not load it. The preview harness does not import it, so `scripts/check_m4.sh` still builds where the module is absent.
 
 Build the native library and the preview:
 
@@ -132,7 +143,7 @@ scripts/probe.sh
 scripts/probe.sh "$BENDWALL_WORKSHOP"
 ```
 
-One line per item id: `loaded`, `partial <feature>`, or `unsupported <feature>`.
+One line per item id: `loaded`, `partial <object-or-effect-types>`, or `unsupported <feature>`. `BENDWALL_ASSETS` defaults to `~/.local/share/Steam/steamapps/common/wallpaper_engine/assets`. The synthetic check points it at `fixtures/assets-probe`.
 
 The preview reads the same files:
 
@@ -143,10 +154,12 @@ build/kde/bendwall-preview --dump-workshop "$BENDWALL_WORKSHOP"
 
 ## Still open
 
-- The GL renderer draws image layers, sprite frames, and an effect chain. It does not yet draw text, models, or a live `videotex`.
-- Particle operators beyond movement and alphafade (size, color, turbulence, trails) are not simulated.
-- Audio bands are not uploaded as `g_AudioSpectrum` yet. Capture and the DFT are separate from the frame.
+- The scene pass draws image layers, sprite frames, and an effect chain, and it uploads `g_AudioSpectrum` as four floats. It does not yet place the text texture or a video frame into that pass. Text is a bitmap upload (not MSDF, outline, or wrapping). A video wallpaper's frames are GL textures; the Plasma image item still shows the PNG the Bend process wrote.
+- `.mdl` models (`MDLV0023` / `MDLS0004` / `MDLA0006`) are not decoded, so a model object stays `partial model`.
+- Particle operators beyond movement, alphafade, sizechange, angularmovement, and colorchange (turbulence, trails) are not simulated.
+- The four GL bands are not yet the Pulse capture. The web listener is the full 128 floats, and it is zeros unless the host sets `wallpaperAudio`.
 - SceneScript is `update(value)` only. `engine`, `input`, `thisScene`, and `thisLayer` are not implemented.
-- Web wallpapers need Qt WebEngine (or another browser view) plus the shim. The shim is tested; the view is not linked.
-- Asset fallback from `BENDWALL_ASSETS` is not consulted when a scene file is missing.
+- Color-adjust keys (`wec_brs` and the rest) are not mapped onto the shader.
+- The scene model's effect list keeps the first file. The probe lists every `effects/<name>/` it finds, which is why a tint-and-pulse scene is `partial` even though the headless tint pass runs.
 - Half-resolution tex images and mip levels other than 0 are not decoded.
+- Web playback needs `qt6-webengine` on the machine that runs Plasma. The view is in the package; this image cannot link the module.

@@ -37,6 +37,19 @@ static float fbits(uint32_t u) {
   return f;
 }
 
+static uint32_t ubits(float f) {
+  uint32_t u;
+  memcpy(&u, &f, 4);
+  return u;
+}
+
+int bw_gl_prog(const char* vs, const char* fs);
+int bw_gl_bind(int which);
+int bw_gl_clear(void);
+int bw_gl_quad(int prog, int tex,
+    uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1,
+    uint32_t u0, uint32_t v0, uint32_t u1, uint32_t v1);
+
 static int make_target(int i) {
   glGenTextures(1, &g_ctex[i]);
   glBindTexture(GL_TEXTURE_2D, g_ctex[i]);
@@ -210,6 +223,55 @@ int bw_gl_f1(int prog, const char* name, uint32_t bits) {
   if (loc < 0) { blog("missing f1"); blog(name); return 0; }
   glUniform1f(loc, fbits(bits));
   return 1;
+}
+
+int bw_gl_fv(int prog, const char* name, uint32_t b0, uint32_t b1, uint32_t b2, uint32_t b3) {
+  GLint loc;
+  float v[4];
+  if (!g_ok || prog <= 0 || !name) return 0;
+  glUseProgram((GLuint)prog);
+  loc = glGetUniformLocation((GLuint)prog, name);
+  if (loc < 0) { blog("missing fv"); blog(name); return 0; }
+  v[0] = fbits(b0);
+  v[1] = fbits(b1);
+  v[2] = fbits(b2);
+  v[3] = fbits(b3);
+  glUniform1fv(loc, 4, v);
+  return 1;
+}
+
+int bw_gl_px(int tex, int x, int y) {
+  static const char* vs =
+    "#version 330 core\n"
+    "layout(location=0) in vec3 a_Position;\n"
+    "layout(location=1) in vec2 a_TexCoord;\n"
+    "out vec2 v;\n"
+    "void main(){ v = a_TexCoord; gl_Position = vec4(a_Position, 1.0); }\n";
+  static const char* fs =
+    "#version 330 core\n"
+    "in vec2 v;\n"
+    "uniform sampler2D g_Texture0;\n"
+    "out vec4 fragColor;\n"
+    "void main(){ fragColor = texture(g_Texture0, v); }\n";
+  static GLuint prog = 0;
+  uint8_t px[4];
+  uint32_t n1 = ubits(-1.f), p1 = ubits(1.f), z = ubits(0.f), o = ubits(1.f);
+  if (!g_ok || tex <= 0) return 0;
+  if (!prog) {
+    prog = (GLuint)bw_gl_prog(vs, fs);
+    if (!prog) return 0;
+  }
+  if (!bw_gl_bind(0)) return 0;
+  if (!bw_gl_clear()) return 0;
+  if (!bw_gl_quad((int)prog, tex, n1, p1, p1, n1, z, z, o, o)) return 0;
+  if (x < 0) x = 0;
+  if (y < 0) y = 0;
+  if (x >= g_w) x = g_w - 1;
+  if (y >= g_h) y = g_h - 1;
+  glBindFramebuffer(GL_FRAMEBUFFER, g_fbo[0]);
+  glPixelStorei(GL_PACK_ALIGNMENT, 1);
+  glReadPixels(x, y, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+  return (int)(px[0] | (px[1] << 8) | (px[2] << 16) | (px[3] << 24));
 }
 
 int bw_gl_f2(int prog, const char* name, uint32_t a, uint32_t b) {

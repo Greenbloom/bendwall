@@ -1,0 +1,5 @@
+{
+  "objects": [
+    {"name": "label", "text": {"value": "hi", "font": "systemfont_arial", "pointsize": 12}}
+  ]
+}

@@ -6,12 +6,18 @@ want = [
     "10 loaded",
     "11 partial particle",
     "12 unsupported application",
-    "13 partial web",
+    "13 loaded",
     "14 unsupported dependency",
-    "15 partial playback",
+    "15 loaded",
     "16 unsupported scene",
     "18 unsupported video",
     "19 partial model",
+    "20 loaded",
+    "21 loaded",
+    "22 loaded",
+    "23 partial particle effect:tint effect:pulse",
+    "24 loaded",
+    "26 loaded",
 ]
 if got != want:
     print("GOT")

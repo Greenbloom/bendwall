@@ -253,3 +253,69 @@ def run(src: String) -> String:
 def run.go(s: Sys) -> String:
   Sys{speed, life, gx, gy, drag, n} = s
   show(steps(P{0.0, 0.0, speed, 0.0, 0.0, life, 1}, 2, 1.0, gx, gy, drag))
+
+# sizechange, angularmovement and colorchange. start size 1, angle 0, color 0.
+# Two steps of dt 1 add rate each step. run() above is unchanged.
+
+@unsafe
+def dup_s(s: String) -> String & String:
+  match s:
+    case SNil{}:
+      (SNil{}, SNil{})
+    case SCon{Chr{c}, t}:
+      dup_s.c(c, dup_s(t))
+
+@unsafe
+def dup_s.c(+c: U32, p: String & String) -> String & String:
+  (a, b) = p
+  (SCon{Chr{c}, a}, SCon{Chr{c}, b})
+
+@unsafe
+def op_num(src: String, op: String, key: String) -> F32:
+  op_num.j(J.parse(src), op, key)
+
+@unsafe
+def op_num.j(j: J.J, op: String, key: String) -> F32:
+  num_of(child(named(kids(child(j, "operator")), op), key))
+
+@unsafe
+def step_lin(+v: F32, +rate: F32, +dt: F32) -> F32:
+  (v + (rate * dt : F32) : F32)
+
+@unsafe
+def steps_lin(+v: F32, +rate: F32, +dt: F32, +n: U32) -> F32:
+  steps_lin.m(v, rate, dt, n, U32.is_zero(n))
+
+@unsafe
+def steps_lin.m(+v: F32, +rate: F32, +dt: F32, +n: U32, z: Bool) -> F32:
+  match z:
+    case True{}:
+      v
+    case False{}:
+      steps_lin(step_lin(v, rate, dt), rate, dt, (n - 1 : U32))
+
+@unsafe
+def run_more(src: String) -> String:
+  run_more.a(dup_s(src))
+
+@unsafe
+def run_more.a(p: String & String) -> String:
+  (a, b) = p
+  run_more.b(op_num(a, "sizechange", "rate"), b)
+
+@unsafe
+def run_more.b(+sz: F32, src: String) -> String:
+  run_more.c(sz, dup_s(src))
+
+@unsafe
+def run_more.c(+sz: F32, p: String & String) -> String:
+  (a, b) = p
+  run_more.d(sz, op_num(a, "angularmovement", "speed"), b)
+
+@unsafe
+def run_more.d(+sz: F32, +ang: F32, src: String) -> String:
+  run_more.v(sz, ang, op_num(src, "colorchange", "rate"))
+
+@unsafe
+def run_more.v(+sz: F32, +ang: F32, +col: F32) -> String:
+  "SZ size=" ++ U32.show(F32.bits(steps_lin(1.0, sz, 1.0, 2))) ++ " ang=" ++ U32.show(F32.bits(steps_lin(0.0, ang, 1.0, 2))) ++ " col=" ++ U32.show(F32.bits(steps_lin(0.0, col, 1.0, 2)))

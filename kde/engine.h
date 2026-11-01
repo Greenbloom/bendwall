@@ -16,6 +16,12 @@ public:
     /* 0..1. The default the player uses is 1. 0 mutes the soundtrack. */
     void setVideoVolume(float volume);
     void setVideoMute(bool on);
+    /* Live frames skip glReadPixels. Grabs leave this on. */
+    void setReadback(bool on);
+    void setPointer(float x, float y, float itemW, float itemH, bool valid);
+    void profile(int* simUs, int* glUs, int* readUs) const;
+    bool blit();
+    bool exported() const;
     QImage image() const;
     QString line() const;
     QString kind() const;

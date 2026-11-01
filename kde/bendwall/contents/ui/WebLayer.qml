@@ -11,7 +11,7 @@ Item {
 
     property var liveAudio: []
     property string livePage: ""
-    onLivePageChanged: view.url = pageUrl()
+    onLivePageChanged: if (shimReady) view.url = pageUrl()
 
     function pageUrl() {
         try {
@@ -59,49 +59,22 @@ Item {
     }
 
     property bool pageReady: false
+    property bool shimReady: false
 
-    WebEngineScript {
-        id: shim
-        name: "bendwall-host"
-        worldId: WebEngineScript.MainWorld
-        injectionPoint: WebEngineScript.DocumentCreation
-        sourceUrl: Qt.resolvedUrl("webshim.js")
-    }
-
-    /* Qt 6.11.3 reports a profile element as not creatable, and older
-       Qt has no separate profile type we can build here. The view's
-       default profile accepts userScripts on every version we run,
-       including 6.11. bendwallQtVersion is the runtime Qt string. */
-    function runtimeQt() {
-        var major = 0
-        var minor = 0
-        try {
-            if (typeof bendwallQtVersion === "string") {
-                var parts = bendwallQtVersion.split(".")
-                major = parseInt(parts[0])
-                minor = parseInt(parts[1])
-            }
-        } catch (e) {
-        }
-        if (isNaN(major))
-            major = 0
-        if (isNaN(minor))
-            minor = 0
-        return { major: major, minor: minor }
-    }
-
+    /* WebEngineScript is a value type on Qt 6.11, so it is not a QML
+       element. WebEngine.script() builds the value, and the view's
+       userScripts collection takes it before the first url. */
     function attachShim() {
-        var q = runtimeQt()
-        var profile = view.profile
-        /* 6.11 and anything older, and a missing version, stay on the
-           default profile. A newer runtime uses that same profile: an
-           explicit profile element is not creatable on 6.11. */
-        if (q.major < 6 || (q.major === 6 && q.minor <= 11) || q.major === 0)
-            profile = view.profile
-        else
-            profile = view.profile
-        if (profile)
-            profile.userScripts.insert(shim)
+        var script = WebEngine.script()
+        script.name = "bendwall-host"
+        script.worldId = WebEngineScript.MainWorld
+        script.injectionPoint = WebEngineScript.DocumentCreation
+        script.sourceUrl = Qt.resolvedUrl("webshim.js")
+        if (view.userScripts)
+            view.userScripts.insert(script)
+        else if (view.profile && view.profile.userScripts)
+            view.profile.userScripts.insert(script)
+        host.shimReady = true
         view.url = host.pageUrl()
     }
 

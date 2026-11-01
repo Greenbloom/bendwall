@@ -20,8 +20,8 @@
    and the compressed member can be large too. */
 #define CAP_FILE (256 * 1024 * 1024)
 #define CAP_RAW (8192 * 8192 * 4)
-#define MAX_LAYER 32
-#define MAX_PART_SYS 64
+#define MAX_LAYER 64
+#define MAX_PART_SYS 256
 
 static uint32_t ru32(const uint8_t* p) {
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
@@ -784,20 +784,25 @@ static int read_image(const uint8_t* b, int n, int* i, int bv, int vol, int fif,
    not start on a blank that the effect pass turns into black. */
 static int frame_has_ink(const BwSheet* sheets, int nsheets, const BwFrame* fr) {
     const BwSheet* sh;
-    int r, c, hits = 0;
-    float x0, x1, y0, y1;
+    int x, y, hits = 0, x0, x1, y0, y1, sx, sy;
     if (!sheets || !fr || fr->sheet < 0 || fr->sheet >= nsheets) return 1;
     sh = &sheets[fr->sheet];
     if (!sh->rgba || sh->w < 1 || sh->h < 1) return 1;
-    x0 = fr->x;
-    x1 = fr->x + fr->w;
-    y0 = fr->y;
-    y1 = fr->y + fr->h;
-    for (r = 0; r < 6; r++) {
-        for (c = 0; c < 6; c++) {
-            int x = (int)floorf(x0 + ((float)c + 0.5f) / 6.f * (x1 - x0));
-            int y = (int)floorf(y0 + ((float)r + 0.5f) / 6.f * (y1 - y0));
-            if (x < 0 || y < 0 || x >= sh->w || y >= sh->h) continue;
+    x0 = (int)floorf(fr->x);
+    y0 = (int)floorf(fr->y);
+    x1 = (int)ceilf(fr->x + fr->w);
+    y1 = (int)ceilf(fr->y + fr->h);
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > sh->w) x1 = sh->w;
+    if (y1 > sh->h) y1 = sh->h;
+    if (x1 <= x0 || y1 <= y0) return 1;
+    sx = (x1 - x0) / 48;
+    sy = (y1 - y0) / 48;
+    if (sx < 1) sx = 1;
+    if (sy < 1) sy = 1;
+    for (y = y0; y < y1; y += sy) {
+        for (x = x0; x < x1; x += sx) {
             hits++;
             if (sh->rgba[((size_t)y * (size_t)sh->w + (size_t)x) * 4 + 3] > 8) return 1;
         }
@@ -2167,40 +2172,213 @@ static int load_picture(const char* dir, const char* assets, const char* rel, Px
     return load_pixels(dir, assets, alt, g, why, why_cap);
 }
 
+static void release_part(BwPartSys* sys) {
+    if (!sys) return;
+    free(sys->rgba);
+    free_sheets(sys->sheets, sys->nsheets);
+    free(sys->frames);
+    sys->rgba = NULL;
+    sys->sheets = NULL;
+    sys->frames = NULL;
+    sys->nsheets = 0;
+    sys->nframes = 0;
+}
+
 static int push_part(BwPlan* plan, BwPartSys sys) {
     BwPartSys* n;
     if (plan->nparts >= MAX_PART_SYS) {
-        free(sys.rgba);
+        release_part(&sys);
         fprintf(stderr, "bendwall: particle cap\n");
-        return 0;
+        return -1;
     }
     n = (BwPartSys*)realloc(plan->parts, (size_t)(plan->nparts + 1) * sizeof(BwPartSys));
     if (!n) {
-        free(sys.rgba);
-        return 0;
+        release_part(&sys);
+        return -1;
     }
     plan->parts = n;
     plan->parts[plan->nparts++] = sys;
+    return plan->nparts - 1;
+}
+
+static void lower_buf(char* s) {
+    for (; s && *s; ++s) *s = (char)tolower((unsigned char)*s);
+}
+
+static int j_name(const Jv* obj, char* out, int cap) {
+    if (!out || cap < 2) return 0;
+    out[0] = 0;
+    if (!j_field(obj, "name", out, cap) && !j_field(obj, "type", out, cap)) return 0;
+    lower_buf(out);
+    return out[0] != 0;
+}
+
+/* A box extent is a vec3. A bare number fills x, y, and z. A one-token
+   string does too, so it is not (n, 0, 0). */
+static int j_box(const Jv* obj, const char* key, float* x, float* y, float* z) {
+    Jv v;
+    char b[128];
+    const char* p;
+    const char* e1;
+    const char* e2;
+    const char* e3;
+    float yv, zv, n;
+    if (!obj || !j_obj_get(obj, key, &v)) return 0;
+    v = j_unwrap(&v);
+    if (v.kind == 7) return 0;
+    if (!j_lit(&v, b, sizeof b)) return 0;
+    if (!strcmp(b, "null")) return 0;
+    if (v.kind == 2 || v.kind == 5 || v.kind == 6) {
+        n = pf(b, NULL);
+        *x = *y = *z = n;
+        return 1;
+    }
+    p = b;
+    *x = pf(p, &e1);
+    if (e1 == p) return 0;
+    p = e1;
+    yv = pf(p, &e2);
+    if (e2 == p) {
+        *y = *z = *x;
+        return 1;
+    }
+    *y = yv;
+    p = e2;
+    zv = pf(p, &e3);
+    if (e3 == p) {
+        *z = 0.f;
+        return 1;
+    }
+    *z = zv;
     return 1;
 }
 
-static void take_particle(BwPlan* plan, const char* dir, const char* assets, const Jv* obj, const PropTab* props) {
+static int comp_z(const Jv* obj, const char* a, const char* b, float* z) {
+    float x, y;
+    int present = 0;
+    if (vec_key(obj, a, b, &x, &y, z)) return 1;
+    *z = num_key(obj, a, b, 0.f, &present);
+    return present;
+}
+
+static int block_last(const Jv* root, const char* section, const char* name, Jv* out) {
+    Jv arr, item;
+    int i, n, found = 0;
+    char got[64];
+    if (!root || !j_obj_get(root, section, &arr) || arr.kind != 4) return 0;
+    n = j_arr_count(&arr);
+    for (i = 0; i < n; i++) {
+        if (!j_arr_at(&arr, i, &item) || item.kind != 3) continue;
+        if (!j_name(&item, got, sizeof got)) continue;
+        if (strcmp(got, name) == 0) {
+            *out = item;
+            found = 1;
+        }
+    }
+    return found;
+}
+
+static void part_gap(const char* section, const char* name) {
+    static char seen[48][72];
+    static int nseen;
+    char key[72];
+    int i;
+    if (!section || !name || !name[0]) return;
+    snprintf(key, sizeof key, "%s %s", section, name);
+    for (i = 0; i < nseen; i++)
+        if (!strcmp(seen[i], key)) return;
+    if (nseen < 48) snprintf(seen[nseen++], 72, "%s", key);
+    fprintf(stderr, "bendwall: unsupported particle %s %s\n", section, name);
+}
+
+static int known_part(const char* section, const char* name) {
+    if (!section || !name) return 0;
+    if (!strcmp(section, "emitter"))
+        return !strcmp(name, "sphererandom") || !strcmp(name, "boxrandom");
+    if (!strcmp(section, "initializer"))
+        return !strcmp(name, "lifetimerandom") || !strcmp(name, "sizerandom") || !strcmp(name, "alpharandom")
+            || !strcmp(name, "colorrandom") || !strcmp(name, "rotationrandom") || !strcmp(name, "velocityrandom")
+            || !strcmp(name, "angularvelocityrandom") || !strcmp(name, "turbulentvelocityrandom");
+    if (!strcmp(section, "operator"))
+        return !strcmp(name, "movement") || !strcmp(name, "alphafade") || !strcmp(name, "sizechange")
+            || !strcmp(name, "colorchange") || !strcmp(name, "angularmovement") || !strcmp(name, "controlpointattract");
+    if (!strcmp(section, "renderer"))
+        return !strcmp(name, "sprite") || !strcmp(name, "ropetrail");
+    if (!strcmp(section, "child")) return !strcmp(name, "eventfollow");
+    return 0;
+}
+
+static void audit_part(const Jv* doc) {
+    static const char* secs[] = {"emitter", "initializer", "operator", "renderer", NULL};
+    int s, i, n;
+    for (s = 0; secs[s]; s++) {
+        Jv arr, item;
+        char name[64];
+        if (!j_obj_get(doc, secs[s], &arr) || arr.kind != 4) continue;
+        n = j_arr_count(&arr);
+        for (i = 0; i < n; i++) {
+            if (!j_arr_at(&arr, i, &item) || item.kind != 3) continue;
+            if (!j_name(&item, name, sizeof name)) continue;
+            if (!known_part(secs[s], name)) part_gap(secs[s], name);
+        }
+    }
+    {
+        Jv arr, item;
+        char name[64];
+        if (j_obj_get(doc, "children", &arr) && arr.kind == 4) {
+            n = j_arr_count(&arr);
+            for (i = 0; i < n; i++) {
+                if (!j_arr_at(&arr, i, &item) || item.kind != 3) continue;
+                name[0] = 0;
+                if (!j_field(&item, "type", name, sizeof name)) j_name(&item, name, sizeof name);
+                lower_buf(name);
+                if (name[0] && !known_part("child", name)) part_gap("child", name);
+            }
+        }
+    }
+}
+
+static int emitter_pick(const Jv* doc, Jv* out, char* name, int cap) {
+    Jv arr, item;
+    if (block_named(doc, "emitter", "sphererandom", out)) {
+        snprintf(name, (size_t)cap, "sphererandom");
+        return 1;
+    }
+    if (block_named(doc, "emitter", "boxrandom", out)) {
+        snprintf(name, (size_t)cap, "boxrandom");
+        return 1;
+    }
+    if (!j_obj_get(doc, "emitter", &arr) || arr.kind != 4) return 0;
+    if (!j_arr_at(&arr, 0, &item) || item.kind != 3) return 0;
+    *out = item;
+    if (!j_name(&item, name, cap)) snprintf(name, (size_t)cap, "emitter");
+    return 1;
+}
+
+static int take_particle(BwPlan* plan, const char* dir, const char* assets, const Jv* obj, const PropTab* props, const char* force_path, int parent, int as_child, int depth) {
     Jv field, doc, em, block, mat;
     BwPartSys sys;
-    char path[512], matp[512], tex[512], why[1100], alt[1100];
+    char path[512], matp[512], tex[512], why[1100], alt[1100], ename[64];
     char* blob = NULL;
     char* matb = NULL;
     PxGot g;
     float ox, oy, oz, ex, ey, ez, deg, ax, ay, az;
     float dx, dy, dz, len, sign, bright, mul;
     float cpx[8], cpy[8];
-    int i, present, st, id, nc;
-    if (over_off(obj)) return;
-    if (!j_obj_get(obj, "particle", &field)) return;
-    if (!pull_path(&field, path, sizeof path, 0) || !path[0]) {
-        if (!resolve_user(props, &field, path, sizeof path) || !path[0]) {
-            fprintf(stderr, "bendwall: particle not found (no path)\n");
-            return;
+    int cpmouse[8];
+    int i, present, st, id, nc, idx, supported;
+    if (depth > 3) return -1;
+    if (!as_child && over_off(obj)) return -1;
+    path[0] = 0;
+    if (force_path && force_path[0]) {
+        snprintf(path, sizeof path, "%s", force_path);
+    } else {
+        if (!j_obj_get(obj, "particle", &field)) return -1;
+        if (!pull_path(&field, path, sizeof path, 0) || !path[0]) {
+            if (!resolve_user(props, &field, path, sizeof path) || !path[0]) {
+                fprintf(stderr, "bendwall: particle not found (no path)\n");
+                return -1;
+            }
         }
     }
     slash(path);
@@ -2213,7 +2391,7 @@ static void take_particle(BwPlan* plan, const char* dir, const char* assets, con
     if (!blob || !j_doc(blob, &doc)) {
         fprintf(stderr, "bendwall: particle not found %s\n", path);
         free(blob);
-        return;
+        return -1;
     }
     memset(&sys, 0, sizeof sys);
     sys.size_b = -1.f;
@@ -2224,34 +2402,73 @@ static void take_particle(BwPlan* plan, const char* dir, const char* assets, con
     sys.life0 = sys.life1 = 2.f;
     sys.size0 = sys.size1 = 16.f;
     sys.maxcount = 32;
-    if (!first_emitter(&doc, &em)) {
+    sys.size_exp = 1.f;
+    sys.seqmul = 1.f;
+    sys.sx = sys.sy = 1.f;
+    sys.parent = -1;
+    sys.attract_thr = 512.f;
+    audit_part(&doc);
+    if (!emitter_pick(&doc, &em, ename, (int)sizeof ename)) {
         fprintf(stderr, "bendwall: particle not found %s\n", path);
         free(blob);
-        return;
+        return -1;
     }
-    sys.rate = j_num(&em, "rate", 1.f, &present);
-    if (!present) sys.rate = 1.f;
-    sys.burst = j_num(&em, "instantaneous", 0.f, &present) > 0.5f;
+    supported = !strcmp(ename, "sphererandom") || !strcmp(ename, "boxrandom");
+    sys.box = !strcmp(ename, "boxrandom");
+    if (!supported) {
+        part_gap("emitter", ename);
+        sys.rate = 0.f;
+        sys.instant = 0;
+    } else {
+        sys.rate = j_num(&em, "rate", 5.f, &present);
+        if (!present) sys.rate = 5.f;
+        /* instantaneous is how many particles appear at birth, not a flag. */
+        sys.instant = (int)(j_num(&em, "instantaneous", 0.f, &present) + 0.5f);
+        if (sys.instant < 0) sys.instant = 0;
+    }
     sys.speed0 = num_key(&em, "speedmin", "minspeed", 0.f, &present);
     sys.speed1 = num_key(&em, "speedmax", "maxspeed", sys.speed0, &present);
     if (!present) sys.speed1 = sys.speed0;
-    sys.dist0 = num_key(&em, "distancemin", "mindistance", 0.f, &present);
-    sys.dist1 = num_key(&em, "distancemax", "maxdistance", sys.dist0, &present);
-    if (!present) sys.dist1 = sys.dist0;
-    dx = dy = dz = 0.f;
-    if (!j_vec(&em, "directions", &dx, &dy, &dz)) dx = dy = 0.f;
-    len = sqrtf(dx * dx + dy * dy);
-    if (len > 0.0001f) {
-        dx /= len;
-        dy /= len;
-    } else {
-        dx = 0.f;
-        dy = 0.f;
-    }
     sign = j_num(&em, "sign", 1.f, &present);
-    if (sign < 0.f) {
-        dx = -dx;
-        dy = -dy;
+    if (sys.box) {
+        /* Absent distancemax is the 256 cube, not the sphere's scalar 0. */
+        if (!j_box(&em, "distancemin", &sys.bminx, &sys.bminy, &sys.bminz)
+            && !j_box(&em, "mindistance", &sys.bminx, &sys.bminy, &sys.bminz))
+            sys.bminx = sys.bminy = sys.bminz = 0.f;
+        if (!j_box(&em, "distancemax", &sys.bmaxx, &sys.bmaxy, &sys.bmaxz)
+            && !j_box(&em, "maxdistance", &sys.bmaxx, &sys.bmaxy, &sys.bmaxz))
+            sys.bmaxx = sys.bmaxy = sys.bmaxz = 256.f;
+        if (!j_vec(&em, "directions", &dx, &dy, &dz)) {
+            dx = 1.f;
+            dy = 1.f;
+            dz = 0.f;
+        }
+        if (sign < 0.f) {
+            dx = -dx;
+            dy = -dy;
+            dz = -dz;
+        }
+        sys.dvx = dx;
+        sys.dvy = dy;
+        sys.dvz = dz;
+    } else {
+        sys.dist0 = num_key(&em, "distancemin", "mindistance", 0.f, &present);
+        sys.dist1 = num_key(&em, "distancemax", "maxdistance", sys.dist0, &present);
+        if (!present) sys.dist1 = sys.dist0;
+        dx = dy = dz = 0.f;
+        if (!j_vec(&em, "directions", &dx, &dy, &dz)) dx = dy = 0.f;
+        len = sqrtf(dx * dx + dy * dy);
+        if (len > 0.0001f) {
+            dx /= len;
+            dy /= len;
+        } else {
+            dx = 0.f;
+            dy = 0.f;
+        }
+        if (sign < 0.f) {
+            dx = -dx;
+            dy = -dy;
+        }
     }
     ex = ey = ez = 0.f;
     j_vec(&em, "origin", &ex, &ey, &ez);
@@ -2264,6 +2481,8 @@ static void take_particle(BwPlan* plan, const char* dir, const char* assets, con
         sys.size0 = num_key(&block, "min", "minimum", sys.size0, &present);
         sys.size1 = num_key(&block, "max", "maximum", sys.size0, &present);
         if (!present) sys.size1 = sys.size0;
+        sys.size_exp = j_num(&block, "exponent", 1.f, &present);
+        if (!present || sys.size_exp == 0.f) sys.size_exp = 1.f;
     }
     if (block_named(&doc, "initializer", "alpharandom", &block)) {
         sys.a0 = num_key(&block, "min", "minimum", 1.f, &present);
@@ -2282,10 +2501,53 @@ static void take_particle(BwPlan* plan, const char* dir, const char* assets, con
         color_fix(&sys.r0, &sys.g0, &sys.b0);
         color_fix(&sys.r1, &sys.g1, &sys.b1);
     }
-    if (block_named(&doc, "initializer", "rotationrandom", &block)) {
-        sys.ang0 = num_key(&block, "min", "minimum", 0.f, &present);
-        sys.ang1 = num_key(&block, "max", "maximum", sys.ang0, &present);
-        if (!present) sys.ang1 = sys.ang0;
+    if (block_named(&doc, "initializer", "velocityrandom", &block)) {
+        sys.has_vel = 1;
+        if (!vec_key(&block, "min", "minimum", &sys.vminx, &sys.vminy, &sys.vminz)) {
+            sys.vminx = -32.f;
+            sys.vminy = -32.f;
+            sys.vminz = 0.f;
+        }
+        if (!vec_key(&block, "max", "maximum", &sys.vmaxx, &sys.vmaxy, &sys.vmaxz)) {
+            sys.vmaxx = 32.f;
+            sys.vmaxy = 32.f;
+            sys.vmaxz = 0.f;
+        }
+    }
+    if (block_named(&doc, "initializer", "turbulentvelocityrandom", &block)) {
+        sys.has_turb = 1;
+        sys.turb_scale = j_num(&block, "scale", 1.f, &present);
+        if (!present) sys.turb_scale = 1.f;
+        sys.turb_time = j_num(&block, "timescale", 1.f, &present);
+        if (!present) sys.turb_time = 1.f;
+        sys.turb_off = j_num(&block, "offset", 0.f, &present);
+        sys.turb_s0 = num_key(&block, "speedmin", "minspeed", 100.f, &present);
+        if (!present) sys.turb_s0 = 100.f;
+        sys.turb_s1 = num_key(&block, "speedmax", "maxspeed", 250.f, &present);
+        if (!present) sys.turb_s1 = sys.turb_s0 > 250.f ? sys.turb_s0 : 250.f;
+        sys.turb_p0 = num_key(&block, "phasemin", "minphase", 0.f, &present);
+        sys.turb_p1 = num_key(&block, "phasemax", "maxphase", 0.1f, &present);
+        if (!present) sys.turb_p1 = 0.1f;
+        if (!j_vec(&block, "forward", &sys.turb_fx, &sys.turb_fy, &sys.turb_fz)) {
+            sys.turb_fx = 0.f;
+            sys.turb_fy = 1.f;
+            sys.turb_fz = 0.f;
+        }
+        if (!j_vec(&block, "right", &sys.turb_rx, &sys.turb_ry, &sys.turb_rz)) {
+            sys.turb_rx = 0.f;
+            sys.turb_ry = 0.f;
+            sys.turb_rz = 1.f;
+        }
+    }
+    if (block_named(&doc, "initializer", "angularvelocityrandom", &block)) {
+        sys.has_angv = 1;
+        if (!comp_z(&block, "min", "minimum", &sys.av0)) sys.av0 = -5.f;
+        if (!comp_z(&block, "max", "maximum", &sys.av1)) sys.av1 = 5.f;
+    }
+    /* Two rotationrandom blocks: the last one sets the angle. Radians. */
+    if (block_last(&doc, "initializer", "rotationrandom", &block)) {
+        if (!comp_z(&block, "min", "minimum", &sys.ang0)) sys.ang0 = 0.f;
+        if (!comp_z(&block, "max", "maximum", &sys.ang1)) sys.ang1 = 6.2831853f;
     }
     if (block_named(&doc, "operator", "movement", &block)) {
         if (!j_vec(&block, "gravity", &sys.gravx, &sys.gravy, &ez)) sys.gravx = sys.gravy = 0.f;
@@ -2322,21 +2584,33 @@ static void take_particle(BwPlan* plan, const char* dir, const char* assets, con
     }
     if (block_named(&doc, "operator", "angularmovement", &block)) {
         int pa = 0;
-        float sp = num_key(&block, "speed", "rate", 0.f, &pa);
-        if (!pa && j_vec(&block, "angularvelocity", &ax, &ay, &az)) sp = az;
-        sys.ang_rate = sp;
+        float sp;
+        sys.ang_op = 1;
+        sys.ang_drag = j_num(&block, "drag", 0.f, &present);
+        if (j_vec(&block, "force", &ax, &ay, &az)) sys.ang_force = az;
+        /* speed/rate is degrees per second from older fixtures. force is rad/s^2. */
+        sp = num_key(&block, "speed", "rate", 0.f, &pa);
+        if (!pa && j_vec(&block, "angularvelocity", &ax, &ay, &az)) {
+            sp = az;
+            pa = 1;
+        }
+        if (pa) sys.ang_rate = sp * 0.01745329251f;
     }
     memset(cpx, 0, sizeof cpx);
     memset(cpy, 0, sizeof cpy);
+    memset(cpmouse, 0, sizeof cpmouse);
     if (j_obj_get(&doc, "controlpoint", &block) && block.kind == 4) {
         nc = j_arr_count(&block);
         if (nc > 8) nc = 8;
         for (i = 0; i < nc; i++) {
             Jv cp;
             float cx, cy, cz;
+            int flags;
             if (!j_arr_at(&block, i, &cp) || cp.kind != 3) continue;
             id = (int)j_num(&cp, "id", (float)i, &present);
             if (id < 0 || id > 7) continue;
+            flags = (int)j_num(&cp, "flags", 0.f, &present);
+            cpmouse[id] = (flags & 1) ? 1 : 0;
             if (!vec_key(&cp, "offset", "origin", &cx, &cy, &cz)) continue;
             cpx[id] = cx;
             cpy[id] = cy;
@@ -2358,73 +2632,132 @@ static void take_particle(BwPlan* plan, const char* dir, const char* assets, con
         if (!present) sys.attract = num_key(&block, "strength", "rate", 0.f, &present);
         sys.cpx = cpx[id];
         sys.cpy = cpy[id];
+        sys.cp_mouse = cpmouse[id];
         if (vec_key(&block, "origin", NULL, &ax, &ay, &az)) {
             sys.cpx = ax;
             sys.cpy = ay;
+            sys.cp_mouse = 0;
         }
+        sys.attract_thr = num_key(&block, "threshold", "distance", 512.f, &present);
+        if (!present) sys.attract_thr = num_key(&block, "threadhold", "radius", 512.f, &present);
+        if (!present) sys.attract_thr = 512.f;
+        if (sys.attract_thr < 0.f) sys.attract_thr = 0.f;
         sys.has_attract = sys.attract != 0.f;
     }
     sys.start = j_num(&doc, "starttime", 0.f, &present);
+    if (sys.start < 0.f) sys.start = 0.f;
+    {
+        char mode[32];
+        Jv mv;
+        mode[0] = 0;
+        if (j_obj_get(&doc, "animationmode", &mv)) {
+            mv = j_unwrap(&mv);
+            if (mv.kind != 7 && j_lit(&mv, mode, sizeof mode) && strcmp(mode, "null") != 0) {
+                lower_buf(mode);
+                if (!strcmp(mode, "randomframe")) sys.anim = 1;
+                else if (!strcmp(mode, "sequence")) sys.anim = 2;
+                else if (mode[0]) part_gap("renderer", mode);
+            }
+        }
+        sys.seqmul = j_num(&doc, "sequencemultiplier", 1.f, &present);
+        if (!present) sys.seqmul = 1.f;
+    }
+    if (block_named(&doc, "renderer", "ropetrail", &block)) {
+        sys.rope = 1;
+        sys.rope_len = j_num(&block, "length", 0.05f, &present);
+        if (!present) sys.rope_len = 0.05f;
+        if (sys.rope_len < 0.f) sys.rope_len = 0.f;
+    }
     sys.maxcount = (int)(j_num(&doc, "maxcount", 32.f, &present) + 0.5f);
     if (sys.maxcount < 1) sys.maxcount = 1;
-    mul = over_mul(obj, "count");
-    sys.maxcount = (int)((float)sys.maxcount * mul + 0.5f);
-    if (sys.maxcount > 128) sys.maxcount = 128;
+    if (!as_child) {
+        mul = over_mul(obj, "count");
+        sys.maxcount = (int)((float)sys.maxcount * mul + 0.5f);
+        sys.instant = (int)((float)sys.instant * mul + 0.5f);
+        if (sys.instant < 0) sys.instant = 0;
+        sys.rate *= over_mul(obj, "rate");
+    }
+    if (sys.maxcount > 4096) {
+        fprintf(stderr, "bendwall: particle maxcount clamped\n");
+        sys.maxcount = 4096;
+    }
     if (sys.maxcount < 0) sys.maxcount = 0;
-    sys.rate *= over_mul(obj, "rate");
-    mul = over_mul(obj, "lifetime");
-    sys.life0 *= mul;
-    sys.life1 *= mul;
+    if (!as_child) {
+        mul = over_mul(obj, "lifetime");
+        sys.life0 *= mul;
+        sys.life1 *= mul;
+        mul = over_mul(obj, "speed");
+        sys.speed0 *= mul;
+        sys.speed1 *= mul;
+        sys.vminx *= mul;
+        sys.vminy *= mul;
+        sys.vminz *= mul;
+        sys.vmaxx *= mul;
+        sys.vmaxy *= mul;
+        sys.vmaxz *= mul;
+        sys.turb_s0 *= mul;
+        sys.turb_s1 *= mul;
+        mul = over_mul(obj, "size");
+        sys.size0 *= mul;
+        sys.size1 *= mul;
+        mul = over_mul(obj, "alpha");
+        sys.a0 *= mul;
+        sys.a1 *= mul;
+        bright = over_mul(obj, "brightness");
+        sys.r0 *= bright;
+        sys.g0 *= bright;
+        sys.b0 *= bright;
+        sys.r1 *= bright;
+        sys.g1 *= bright;
+        sys.b1 *= bright;
+        sys.er *= bright;
+        sys.eg *= bright;
+        sys.eb *= bright;
+    }
     if (sys.life0 < 0.05f) sys.life0 = 0.05f;
     if (sys.life1 < 0.05f) sys.life1 = 0.05f;
-    mul = over_mul(obj, "speed");
-    sys.speed0 *= mul;
-    sys.speed1 *= mul;
-    mul = over_mul(obj, "size");
-    sys.size0 *= mul;
-    sys.size1 *= mul;
-    mul = over_mul(obj, "alpha");
-    sys.a0 *= mul;
-    sys.a1 *= mul;
-    bright = over_mul(obj, "brightness");
-    sys.r0 *= bright;
-    sys.g0 *= bright;
-    sys.b0 *= bright;
-    sys.r1 *= bright;
-    sys.g1 *= bright;
-    sys.b1 *= bright;
-    sys.er *= bright;
-    sys.eg *= bright;
-    sys.eb *= bright;
     ox = oy = oz = 0.f;
-    j_vec(obj, "origin", &ox, &oy, &oz);
     deg = 0.f;
-    if (j_vec(obj, "angles", &ax, &ay, &az)) deg = az;
+    if (!as_child) {
+        j_vec(obj, "origin", &ox, &oy, &oz);
+        if (j_vec(obj, "angles", &ax, &ay, &az)) deg = az;
+    }
     {
         float rx, ry;
         rot2(deg, ex, ey, &rx, &ry);
         sys.ox = ox + rx;
         sys.oy = oy + ry;
-        rot2(deg, dx, dy, &sys.dirx, &sys.diry);
-        if (sys.has_attract) {
+        if (!sys.box) rot2(deg, dx, dy, &sys.dirx, &sys.diry);
+        if (sys.has_attract && !sys.cp_mouse) {
             rot2(deg, sys.cpx, sys.cpy, &rx, &ry);
             sys.cpx = ox + rx;
             sys.cpy = oy + ry;
         }
     }
-    mul = j_num(obj, "alpha", 1.f, &present);
-    if (!present) mul = 1.f;
-    if (mul < 0.f) mul = 0.f;
-    if (mul > 1.f) mul = 1.f;
-    sys.a0 *= mul;
-    sys.a1 *= mul;
-    if (j_vec(obj, "scale", &ax, &ay, &az) && ax > 0.f) {
-        sys.size0 *= ax;
-        sys.size1 *= ax;
+    sys.deg = deg;
+    if (!as_child) {
+        mul = j_num(obj, "alpha", 1.f, &present);
+        if (!present) mul = 1.f;
+        if (mul < 0.f) mul = 0.f;
+        if (mul > 1.f) mul = 1.f;
+        sys.a0 *= mul;
+        sys.a1 *= mul;
+        if (j_vec(obj, "scale", &ax, &ay, &az)) {
+            if (ax > 0.f) {
+                sys.size0 *= ax;
+                sys.size1 *= ax;
+                sys.sx = ax;
+            }
+            if (ay > 0.f) sys.sy = ay;
+        }
+    }
+    if (as_child) {
+        sys.follow = 1;
+        sys.parent = parent;
     }
     matp[0] = 0;
     if (!j_field(&doc, "material", matp, sizeof matp) || !matp[0]) {
-        if (pull_material(&field, matp, sizeof matp, 0)) {
+        if (!force_path && pull_material(&field, matp, sizeof matp, 0)) {
         } else
             matp[0] = 0;
     }
@@ -2445,8 +2778,6 @@ static void take_particle(BwPlan* plan, const char* dir, const char* assets, con
             }
         }
         free(matb);
-        free(blob);
-        blob = NULL;
         matb = NULL;
         memset(&g, 0, sizeof g);
         why[0] = 0;
@@ -2456,7 +2787,7 @@ static void take_particle(BwPlan* plan, const char* dir, const char* assets, con
             char fail[1100];
             int got = 0, named_fail = 0;
             over[0] = fail[0] = 0;
-            if (instance_texture(obj, over, sizeof over) && over[0]) {
+            if (!as_child && instance_texture(obj, over, sizeof over) && over[0]) {
                 slash(over);
                 st = load_picture(dir, assets, over, &g, why, (int)sizeof why);
                 if (st > 0 && g.rgba) got = 1;
@@ -2485,6 +2816,16 @@ static void take_particle(BwPlan* plan, const char* dir, const char* assets, con
                 sys.tw = g.w;
                 sys.th = g.h;
                 g.rgba = NULL;
+                if (g.nframes >= 2 && g.sheets && g.frames) {
+                    sys.sheets = g.sheets;
+                    sys.nsheets = g.nsheets;
+                    sys.frames = g.frames;
+                    sys.nframes = g.nframes;
+                    g.sheets = NULL;
+                    g.frames = NULL;
+                    g.nsheets = 0;
+                    g.nframes = 0;
+                }
             } else if (named_fail) {
                 miss_log(fail[0] ? fail : (tex[0] ? tex : matp), st < 0);
                 plan->missing++;
@@ -2496,23 +2837,67 @@ static void take_particle(BwPlan* plan, const char* dir, const char* assets, con
         }
         clear_got(&g);
     }
-    if (!sys.rgba) return;
-    push_part(plan, sys);
+    if (!sys.rgba) {
+        free(blob);
+        release_part(&sys);
+        return -1;
+    }
+    idx = push_part(plan, sys);
+    if (idx >= 0 && depth < 3) {
+        Jv kids, kid;
+        int kn, ki;
+        if (j_obj_get(&doc, "children", &kids) && kids.kind == 4) {
+            kn = j_arr_count(&kids);
+            for (ki = 0; ki < kn; ki++) {
+                char ctype[64], cpath[512];
+                if (!j_arr_at(&kids, ki, &kid) || kid.kind != 3) continue;
+                ctype[0] = cpath[0] = 0;
+                if (!j_field(&kid, "type", ctype, sizeof ctype)) continue;
+                lower_buf(ctype);
+                if (strcmp(ctype, "eventfollow") != 0) continue;
+                if (!j_field(&kid, "name", cpath, sizeof cpath) || !cpath[0]) continue;
+                take_particle(plan, dir, assets, obj, props, cpath, idx, 1, depth + 1);
+            }
+        }
+    }
+    free(blob);
+    return idx;
+}
+
+int bw_text_rgba(const char* s, int* w, int* h, uint8_t** rgba);
+
+static int text_value(const Jv* obj, char* value, int cap) {
+    Jv t, inner;
+    if (!j_obj_get(obj, "text", &t) || !value || cap < 2) return 0;
+    value[0] = 0;
+    if (t.kind == 1) {
+        if (!j_str(&t, value, cap) || !value[0]) return 0;
+    } else if (t.kind == 3) {
+        if (!j_obj_get(&t, "value", &inner)) return 0;
+        inner = j_unwrap(&inner);
+        if (!j_lit(&inner, value, cap) || !value[0]) return 0;
+    } else
+        return 0;
+    return 1;
 }
 
 static void take_text(BwPlan* plan, const Jv* obj) {
-    Jv t, inner;
-    char value[160];
+    char value[1024];
+    float x, y, z;
     size_t n;
-    if (!j_obj_get(obj, "text", &t)) return;
-    if (t.kind == 1) {
-        if (!j_str(&t, value, sizeof value) || !value[0]) return;
-    } else if (t.kind == 3) {
-        if (!j_obj_get(&t, "value", &inner)) return;
-        inner = j_unwrap(&inner);
-        if (!j_lit(&inner, value, sizeof value) || !value[0]) return;
-    } else
+    int placed;
+    uint8_t* px = NULL;
+    int tw = 0, th = 0;
+    if (!text_value(obj, value, (int)sizeof value)) return;
+    plan->has_text = 1;
+    /* Origin or size is the object's rectangle. Corner text is only the
+       strings that have neither, so a page is not a 7px HUD line. */
+    placed = j_vec(obj, "origin", &x, &y, &z) || j_vec(obj, "size", &x, &y, &z);
+    if (placed && bw_text_rgba(value, &tw, &th, &px) && px) {
+        add_pixels(plan, obj, "text", 0, px, tw, th, (float)tw, (float)th, 0);
         return;
+    }
+    free(px);
     if (!plan->text[0])
         snprintf(plan->text, sizeof plan->text, "%s", value);
     else {
@@ -2523,7 +2908,6 @@ static void take_text(BwPlan* plan, const Jv* obj) {
             snprintf(plan->text + n, sizeof plan->text - n, "%s", value);
         }
     }
-    plan->has_text = 1;
 }
 
 static void walk_scene(BwPlan* plan, const char* dir, const char* assets, const char* scene, const PropTab* props) {
@@ -2544,7 +2928,7 @@ static void walk_scene(BwPlan* plan, const char* dir, const char* assets, const 
             if (!visible_obj(&obj)) continue;
             take_text(plan, &obj);
             if (j_obj_get(&obj, "image", &ortho)) take_image(plan, dir, assets, &obj, props);
-            if (j_obj_get(&obj, "particle", &ortho)) take_particle(plan, dir, assets, &obj, props);
+            if (j_obj_get(&obj, "particle", &ortho)) take_particle(plan, dir, assets, &obj, props, NULL, -1, 0, 0);
         }
     }
 }
@@ -2719,7 +3103,11 @@ void bw_plan_free(BwPlan* plan) {
     plan->layers = NULL;
     plan->nlayers = 0;
     if (plan->parts) {
-        for (i = 0; i < plan->nparts; i++) free(plan->parts[i].rgba);
+        for (i = 0; i < plan->nparts; i++) {
+            free(plan->parts[i].rgba);
+            free_sheets(plan->parts[i].sheets, plan->parts[i].nsheets);
+            free(plan->parts[i].frames);
+        }
         free(plan->parts);
         plan->parts = NULL;
         plan->nparts = 0;

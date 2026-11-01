@@ -27,6 +27,11 @@ struct Api {
     const char* (*page)() = nullptr;
     int (*audio_out)(float*) = nullptr;
     void (*close)() = nullptr;
+    void (*set_readback)(int) = nullptr;
+    void (*pointer)(float, float, float, float, int) = nullptr;
+    void (*profile)(int*, int*, int*) = nullptr;
+    int (*blit)() = nullptr;
+    int (*exported)() = nullptr;
     QString err;
     bool tried = false;
 };
@@ -79,6 +84,11 @@ Api& api() {
     a.page = sym<const char* (*)()>(a.so, "bw_play_page");
     a.audio_out = sym<int (*)(float*)>(a.so, "bw_play_audio_out");
     a.close = sym<void (*)()>(a.so, "bw_play_close");
+    a.set_readback = sym<void (*)(int)>(a.so, "bw_play_set_readback");
+    a.pointer = sym<void (*)(float, float, float, float, int)>(a.so, "bw_play_pointer");
+    a.profile = sym<void (*)(int*, int*, int*)>(a.so, "bw_play_profile");
+    a.blit = sym<int (*)()>(a.so, "bw_play_blit");
+    a.exported = sym<int (*)()>(a.so, "bw_play_exported");
     if (!a.open || !a.step || !a.rgba || !a.size || !a.line || !a.kind || !a.close) {
         a.err = QStringLiteral("libbendwall.so is missing the player");
         a.open = nullptr;
@@ -161,6 +171,36 @@ void Engine::setVideoVolume(float volume) {
 void Engine::setVideoMute(bool on) {
     Api& a = api();
     if (a.video_mute) a.video_mute(on ? 1 : 0);
+}
+
+void Engine::setReadback(bool on) {
+    Api& a = api();
+    if (a.set_readback) a.set_readback(on ? 1 : 0);
+}
+
+void Engine::setPointer(float x, float y, float itemW, float itemH, bool valid) {
+    Api& a = api();
+    if (a.pointer) a.pointer(x, y, itemW, itemH, valid ? 1 : 0);
+}
+
+void Engine::profile(int* simUs, int* glUs, int* readUs) const {
+    Api& a = api();
+    if (a.profile) a.profile(simUs, glUs, readUs);
+    else {
+        if (simUs) *simUs = 0;
+        if (glUs) *glUs = 0;
+        if (readUs) *readUs = 0;
+    }
+}
+
+bool Engine::blit() {
+    Api& a = api();
+    return a.blit && a.blit() == 1;
+}
+
+bool Engine::exported() const {
+    Api& a = api();
+    return a.exported && a.exported() == 1;
 }
 
 void Engine::setAudio(const QVector<float>& interleaved) {

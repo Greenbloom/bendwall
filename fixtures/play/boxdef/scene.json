@@ -1,0 +1,1 @@
+{"general":{"orthogonalprojection":{"width":640,"height":360}},"objects":[{"name":"bg","image":"textures/bg.png","origin":"320 180 0","size":"640 360 0"},{"name":"p","particle":"particles/p.json","origin":"320 180 0","scale":"1 1 1"}]}

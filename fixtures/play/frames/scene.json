@@ -1,0 +1,8 @@
+{
+  "general": {"orthogonalprojection": {"width": 160, "height": 90}},
+  "objects": [
+    {"name": "bg", "image": "textures/bg.png", "origin": "80 45 0", "size": "160 90 0"},
+    {"name": "rand", "particle": "particles/rand.json", "origin": "80 20 0"},
+    {"name": "seq", "particle": "particles/seq.json", "origin": "80 70 0"}
+  ]
+}

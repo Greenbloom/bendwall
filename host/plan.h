@@ -56,14 +56,42 @@ typedef struct BwPartSys {
     int color_lerp;
     float gravx, gravy, drag;
     float ang0, ang1, ang_rate;
+    /* starttime is a pre-simulate, in seconds, before the wallpaper clock. */
     float start;
-    float attract, cpx, cpy;
+    float attract, cpx, cpy, attract_thr;
     int has_attract;
+    int cp_mouse;
     int additive;
     int maxcount;
-    int burst;
+    /* instantaneous is a count, not a flag. */
+    int instant;
+    int box;
+    float bminx, bminy, bminz, bmaxx, bmaxy, bmaxz;
+    float dvx, dvy, dvz;
+    int has_vel;
+    float vminx, vminy, vminz, vmaxx, vmaxy, vmaxz;
+    int has_turb;
+    float turb_scale, turb_off, turb_s0, turb_s1, turb_p0, turb_p1, turb_time;
+    float turb_fx, turb_fy, turb_fz;
+    float turb_rx, turb_ry, turb_rz;
+    int has_angv;
+    float av0, av1;
+    float ang_force, ang_drag;
+    int ang_op;
+    float sx, sy, deg;
+    int rope;
+    float rope_len;
+    int anim;
+    float seqmul;
+    float size_exp;
+    int follow;
+    int parent;
     uint8_t* rgba;
     int tw, th;
+    BwSheet* sheets;
+    int nsheets;
+    BwFrame* frames;
+    int nframes;
 } BwPartSys;
 
 typedef struct BwPlan {

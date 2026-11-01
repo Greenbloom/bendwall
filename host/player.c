@@ -16,6 +16,10 @@
 #include <libswscale/swscale.h>
 #include <math.h>
 #include <png.h>
+#include <time.h>
+#define GL_GLEXT_PROTOTYPES 1
+#include <EGL/egl.h>
+#include <EGL/eglext.h>
 
 #define GL_GLEXT_PROTOTYPES 1
 #include <GL/gl.h>
@@ -36,6 +40,8 @@ int bw_gl_image(int tex, int w, int h, const uint8_t* px, int n);
 int bw_gl_f1(int prog, const char* name, uint32_t bits);
 int bw_gl_fvn(int prog, const char* name, const float* v, int count);
 int bw_gl_read(uint8_t* dst, int n);
+int bw_gl_export_color(void);
+void* bw_gl_color_image(void);
 const char* bw_gl_log(void);
 int bw_text_rgba(const char* s, int* w, int* h, uint8_t** rgba);
 void bw_audio_inject(const float* s, int n);
@@ -98,6 +104,19 @@ static Live g_live[MAXL];
 static int g_nlive;
 static int g_miss;
 static uint8_t* g_px;
+static int g_readback = 1;
+static int g_sim_us, g_gl_us, g_read_us;
+static int g_ptr_ok;
+static float g_ptr_x, g_ptr_y;
+static double g_sim;
+static float* g_inst;
+static int g_inst_cap;
+
+static double mono_us(void) {
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (double)ts.tv_sec * 1e6 + (double)ts.tv_nsec / 1e3;
+}
 static int g_time_ms;
 static float g_video_vol = 1.f;
 static float g_proj_vol = 1.f;
@@ -105,6 +124,7 @@ static int g_user_mute = 1;
 static int g_proj_mute;
 static int g_duck = -1;
 static pthread_mutex_t g_gain_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t g_play_mu = PTHREAD_MUTEX_INITIALIZER;
 static int g_uni;
 static int g_scroll, g_spin, g_opacity, g_colorkey, g_tint, g_pulse;
 static int g_has_text, g_has_video, g_has_image, g_text_layer;
@@ -496,26 +516,38 @@ static void sync_sprites(void) {
   }
 }
 
-#define MAX_SYS 64
-#define MAX_P 128
-#define MAX_ALIVE 640
+#define MAX_SYS 256
+#define MAX_COUNT 4096
+#define ROPE_N 12
 
 typedef struct Part {
-  float x, y, vx, vy, age, life, size, ang, r, g, b, a;
+  float x, y, vx, vy, age, life, size, ang, angv, r, g, b, a;
+  float lx, ly, lastdt;
+  uint32_t id, fid;
+  int frame;
+  float rx[ROPE_N], ry[ROPE_N], rt[ROPE_N];
+  int rn, ri;
 } Part;
 
 typedef struct Sys {
   BwPartSys spec;
   int tex;
+  int frame_tex[16];
+  int frame_w[16], frame_h[16];
+  int nframe_tex;
   int n;
-  int burst_done;
+  int instant_done;
+  int rr;
   float acc;
   uint32_t rng;
-  Part p[MAX_P];
+  Part* p;
 } Sys;
 
-static Sys g_sys[MAX_SYS];
+static Sys* g_sys;
 static int g_nsys;
+static uint32_t g_pid = 1;
+
+static void spawn_one(Sys* S, const Part* host);
 
 static float lerand(uint32_t* s, float a, float b) {
   float t;
@@ -531,42 +563,202 @@ static int alive_count(void) {
 }
 
 static int can_spawn(Sys* S) {
-  if (!S || S->n >= S->spec.maxcount || S->n >= MAX_P) return 0;
-  if (alive_count() >= MAX_ALIVE) return 0;
+  if (!S || !S->p) return 0;
+  if (S->n >= S->spec.maxcount || S->n >= MAX_COUNT) return 0;
   return 1;
 }
 
-static void spawn_one(Sys* S) {
+static float hash3(int x, int y, int z) {
+  uint32_t n = (uint32_t)(x * 374761393 + y * 668265263 + z * 2147483647);
+  n = (n ^ (n >> 13)) * 1274126177u;
+  return (float)(n & 65535) / 65535.f * 2.f - 1.f;
+}
+
+static float fade01(float t) { return t * t * (3.f - 2.f * t); }
+
+static float vnoise(float x, float y, float z) {
+  int ix = (int)floorf(x), iy = (int)floorf(y), iz = (int)floorf(z);
+  float fx = fade01(x - (float)ix), fy = fade01(y - (float)iy), fz = fade01(z - (float)iz);
+  float n000 = hash3(ix, iy, iz), n100 = hash3(ix + 1, iy, iz);
+  float n010 = hash3(ix, iy + 1, iz), n110 = hash3(ix + 1, iy + 1, iz);
+  float n001 = hash3(ix, iy, iz + 1), n101 = hash3(ix + 1, iy, iz + 1);
+  float n011 = hash3(ix, iy + 1, iz + 1), n111 = hash3(ix + 1, iy + 1, iz + 1);
+  float x00 = n000 + (n100 - n000) * fx;
+  float x10 = n010 + (n110 - n010) * fx;
+  float x01 = n001 + (n101 - n001) * fx;
+  float x11 = n011 + (n111 - n011) * fx;
+  float y0 = x00 + (x10 - x00) * fy;
+  float y1 = x01 + (x11 - x01) * fy;
+  return y0 + (y1 - y0) * fz;
+}
+
+static void curl_at(float x, float y, float z, float* ox, float* oy, float* oz) {
+  float e = 0.25f;
+  float dAzdy = (vnoise(x, y + e, z + 19.1f) - vnoise(x, y - e, z + 19.1f)) / (2.f * e);
+  float dAydz = (vnoise(x + 19.1f, y, z + e) - vnoise(x + 19.1f, y, z - e)) / (2.f * e);
+  float dAxdz = (vnoise(x, y, z + e) - vnoise(x, y, z - e)) / (2.f * e);
+  float dAzdx = (vnoise(x + e, y, z + 19.1f) - vnoise(x - e, y, z + 19.1f)) / (2.f * e);
+  float dAydx = (vnoise(x + e + 19.1f, y, z) - vnoise(x - e + 19.1f, y, z)) / (2.f * e);
+  float dAxdy = (vnoise(x, y + e, z) - vnoise(x, y - e, z)) / (2.f * e);
+  *ox = dAzdy - dAydz;
+  *oy = dAxdz - dAzdx;
+  *oz = dAydx - dAxdy;
+}
+
+static void turb_add(Sys* S, uint32_t* rng, float x, float y, float* vx, float* vy) {
+  float sp, fx, fy, len, ox, oy, c, sn;
+  if (!S || !S->spec.has_turb) return;
+  sp = lerand(rng, S->spec.turb_s0, S->spec.turb_s1);
+  fx = S->spec.turb_fx;
+  fy = S->spec.turb_fy;
+  len = sqrtf(fx * fx + fy * fy);
+  if (len < 1e-5f) {
+    fx = 0.f;
+    fy = 1.f;
+    len = 1.f;
+  }
+  fx /= len;
+  fy /= len;
+  /* scale 0 is motion only along forward. Offset then rotates that direction. */
+  if (S->spec.turb_scale <= 0.0001f) {
+    ox = fx;
+    oy = fy;
+  } else {
+    float phase = lerand(rng, S->spec.turb_p0, S->spec.turb_p1);
+    float nx, ny, nz, s, along, lat;
+    curl_at(x * S->spec.turb_scale + phase, y * S->spec.turb_scale, (float)g_sim * S->spec.turb_time, &nx, &ny, &nz);
+    s = S->spec.turb_scale;
+    if (s > 2.f) s = 2.f;
+    along = 1.f - fminf(s, 1.f);
+    lat = fminf(s, 1.f);
+    ox = fx * along + nx * lat + S->spec.turb_rx * nz * lat;
+    oy = fy * along + ny * lat + S->spec.turb_ry * nz * lat;
+    if (s > 1.f) {
+      ox += nx * (s - 1.f);
+      oy += ny * (s - 1.f);
+    }
+    len = sqrtf(ox * ox + oy * oy);
+    if (len < 1e-5f) {
+      ox = fx;
+      oy = fy;
+    } else {
+      ox /= len;
+      oy /= len;
+    }
+  }
+  c = cosf(S->spec.turb_off);
+  sn = sinf(S->spec.turb_off);
+  *vx += (ox * c - oy * sn) * sp;
+  *vy += (ox * sn + oy * c) * sp;
+}
+
+static void rope_push(Part* p, float x, float y, float t) {
+  if (!p) return;
+  p->rx[p->ri] = x;
+  p->ry[p->ri] = y;
+  p->rt[p->ri] = t;
+  p->ri = (p->ri + 1) % ROPE_N;
+  if (p->rn < ROPE_N) p->rn++;
+}
+
+static Part* find_part(uint32_t id) {
+  int s, i;
+  if (!id) return NULL;
+  for (s = 0; s < g_nsys; s++) {
+    Sys* S = &g_sys[s];
+    for (i = 0; i < S->n; i++)
+      if (S->p[i].id == id) return &S->p[i];
+  }
+  return NULL;
+}
+
+static void emit_followers(Sys* parentS, Part* host) {
+  int s, k, n, pi;
+  if (!parentS || !host || !g_sys) return;
+  pi = (int)(parentS - g_sys);
+  for (s = 0; s < g_nsys; s++) {
+    Sys* C = &g_sys[s];
+    if (!C->spec.follow || C->spec.parent != pi) continue;
+    n = C->spec.instant;
+    for (k = 0; k < n; k++) spawn_one(C, host);
+  }
+}
+
+static void spawn_one(Sys* S, const Part* host) {
   Part* p;
   float dirx, diry, dist, sp, life, sz, a, cr, cg, cb, ang;
+  float lx, ly, vx, vy;
   uint32_t rng;
   if (!can_spawn(S)) return;
   rng = S->rng;
-  if (S->spec.dirx * S->spec.dirx + S->spec.diry * S->spec.diry > 1e-8f) {
-    dirx = S->spec.dirx;
-    diry = S->spec.diry;
+  lx = ly = vx = vy = 0.f;
+  if (S->spec.box) {
+    float tx = lerand(&rng, -1.f, 1.f);
+    float ty = lerand(&rng, -1.f, 1.f);
+    float px = (S->spec.bminx + (S->spec.bmaxx - S->spec.bminx) * tx) * S->spec.dvx;
+    float py = (S->spec.bminy + (S->spec.bmaxy - S->spec.bminy) * ty) * S->spec.dvy;
+    float rx, ry, len;
+    px *= S->spec.sx;
+    py *= S->spec.sy;
+    {
+      float rad = S->spec.deg * 0.01745329251f;
+      float c = cosf(rad), sn = sinf(rad);
+      rx = px * c - py * sn;
+      ry = px * sn + py * c;
+    }
+    lx = rx;
+    ly = ry;
+    sp = lerand(&rng, S->spec.speed0, S->spec.speed1);
+    len = sqrtf(rx * rx + ry * ry);
+    if (sp != 0.f && len > 1e-4f) {
+      vx = rx / len * sp;
+      vy = ry / len * sp;
+    }
   } else {
-    float t = lerand(&rng, 0.f, 6.2831853f);
-    dirx = cosf(t);
-    diry = sinf(t);
+    if (S->spec.dirx * S->spec.dirx + S->spec.diry * S->spec.diry > 1e-8f) {
+      dirx = S->spec.dirx;
+      diry = S->spec.diry;
+    } else {
+      float t = lerand(&rng, 0.f, 6.2831853f);
+      dirx = cosf(t);
+      diry = sinf(t);
+    }
+    dist = lerand(&rng, S->spec.dist0, S->spec.dist1);
+    sp = lerand(&rng, S->spec.speed0, S->spec.speed1);
+    lx = dirx * dist;
+    ly = diry * dist;
+    vx = dirx * sp;
+    vy = diry * sp;
   }
-  dist = lerand(&rng, S->spec.dist0, S->spec.dist1);
-  sp = lerand(&rng, S->spec.speed0, S->spec.speed1);
+  if (S->spec.has_vel) {
+    float vx2 = lerand(&rng, S->spec.vminx, S->spec.vmaxx);
+    float vy2 = lerand(&rng, S->spec.vminy, S->spec.vmaxy);
+    float rad = S->spec.deg * 0.01745329251f;
+    float c = cosf(rad), sn = sinf(rad);
+    vx += vx2 * c - vy2 * sn;
+    vy += vx2 * sn + vy2 * c;
+  }
   life = lerand(&rng, S->spec.life0, S->spec.life1);
   if (life < 0.05f) life = 0.05f;
-  sz = lerand(&rng, S->spec.size0, S->spec.size1);
+  if (S->spec.size_exp > 0.f && fabsf(S->spec.size_exp - 1.f) > 0.0001f) {
+    float u = lerand(&rng, 0.f, 1.f);
+    u = powf(u, S->spec.size_exp);
+    sz = S->spec.size0 + (S->spec.size1 - S->spec.size0) * u;
+  } else
+    sz = lerand(&rng, S->spec.size0, S->spec.size1);
   a = lerand(&rng, S->spec.a0, S->spec.a1);
   cr = lerand(&rng, S->spec.r0, S->spec.r1);
   cg = lerand(&rng, S->spec.g0, S->spec.g1);
   cb = lerand(&rng, S->spec.b0, S->spec.b1);
   ang = lerand(&rng, S->spec.ang0, S->spec.ang1);
+  turb_add(S, &rng, S->spec.ox + lx, S->spec.oy + ly, &vx, &vy);
   S->rng = rng;
   p = &S->p[S->n++];
   memset(p, 0, sizeof *p);
-  p->x = S->spec.ox + dirx * dist;
-  p->y = S->spec.oy + diry * dist;
-  p->vx = dirx * sp;
-  p->vy = diry * sp;
+  p->x = S->spec.ox + lx;
+  p->y = S->spec.oy + ly;
+  p->vx = vx;
+  p->vy = vy;
   p->life = life;
   p->size = sz;
   p->ang = ang;
@@ -574,6 +766,54 @@ static void spawn_one(Sys* S) {
   p->g = cg;
   p->b = cb;
   p->a = a;
+  p->id = g_pid++;
+  if (g_pid == 0) g_pid = 1;
+  if (S->spec.has_angv) p->angv = lerand(&S->rng, S->spec.av0, S->spec.av1);
+  if (S->spec.anim == 1 && S->nframe_tex > 1) {
+    float t = lerand(&S->rng, 0.f, (float)S->nframe_tex);
+    p->frame = (int)t;
+    if (p->frame >= S->nframe_tex) p->frame = S->nframe_tex - 1;
+    if (p->frame < 0) p->frame = 0;
+  }
+  if (host && host->id) {
+    p->lx = lx;
+    p->ly = ly;
+    p->x = host->x + lx;
+    p->y = host->y + ly;
+    p->fid = host->id;
+  }
+  if (S->spec.rope) rope_push(p, p->x, p->y, (float)g_sim);
+  emit_followers(S, p);
+}
+
+static void attract_at(Sys* S, Part* p, float dt) {
+  float ax, ay, dx, dy, d;
+  if (!S->spec.has_attract || !p) return;
+  if (S->spec.cp_mouse) {
+    if (!g_ptr_ok) return;
+    ax = g_ptr_x;
+    ay = g_ptr_y;
+  } else {
+    ax = S->spec.cpx;
+    ay = S->spec.cpy;
+  }
+  dx = ax - p->x;
+  dy = ay - p->y;
+  d = sqrtf(dx * dx + dy * dy);
+  if (d > 0.001f && d < S->spec.attract_thr) {
+    p->vx += dx / d * S->spec.attract * dt;
+    p->vy += dy / d * S->spec.attract * dt;
+  }
+}
+
+static void spin_at(Sys* S, Part* p, float dt) {
+  float drag;
+  if (!S->spec.ang_op || !p) return;
+  p->angv += S->spec.ang_force * dt;
+  drag = 1.f - S->spec.ang_drag * dt;
+  if (drag < 0.f) drag = 0.f;
+  p->angv *= drag;
+  p->ang += (p->angv + S->spec.ang_rate) * dt;
 }
 
 static void integrate_sys(Sys* S, float dt) {
@@ -582,21 +822,32 @@ static void integrate_sys(Sys* S, float dt) {
   if (drag < 0.f) drag = 0.f;
   for (i = 0; i < S->n; i++) {
     Part* p = &S->p[i];
-    float dx, dy, d;
-    p->x += p->vx * dt;
-    p->y += p->vy * dt;
-    p->vx = (p->vx + S->spec.gravx * dt) * drag;
-    p->vy = (p->vy + S->spec.gravy * dt) * drag;
-    if (S->spec.has_attract) {
-      dx = S->spec.cpx - p->x;
-      dy = S->spec.cpy - p->y;
-      d = sqrtf(dx * dx + dy * dy);
-      if (d > 0.5f) {
-        p->vx += dx / d * S->spec.attract * dt;
-        p->vy += dy / d * S->spec.attract * dt;
+    p->lastdt = dt;
+    if (p->fid) {
+      Part* q;
+      p->lx += p->vx * dt;
+      p->ly += p->vy * dt;
+      p->vx = (p->vx + S->spec.gravx * dt) * drag;
+      p->vy = (p->vy + S->spec.gravy * dt) * drag;
+      q = find_part(p->fid);
+      if (q && q != p) {
+        p->x = q->x + p->lx;
+        p->y = q->y + p->ly;
+      } else {
+        p->fid = 0;
+        p->x += p->vx * dt;
+        p->y += p->vy * dt;
       }
+      attract_at(S, p, dt);
+    } else {
+      p->x += p->vx * dt;
+      p->y += p->vy * dt;
+      p->vx = (p->vx + S->spec.gravx * dt) * drag;
+      p->vy = (p->vy + S->spec.gravy * dt) * drag;
+      attract_at(S, p, dt);
     }
-    p->ang += S->spec.ang_rate * dt;
+    spin_at(S, p, dt);
+    if (S->spec.rope) rope_push(p, p->x, p->y, (float)g_sim);
     p->age += dt;
     if (p->age < p->life) {
       if (w != i) S->p[w] = *p;
@@ -606,26 +857,78 @@ static void integrate_sys(Sys* S, float dt) {
   S->n = w;
 }
 
-static void sim_particles(float dt) {
-  int s;
-  float t;
-  if (dt <= 0.f || g_nsys <= 0) return;
-  t = (float)g_time_ms / 1000.f;
-  for (s = 0; s < g_nsys; s++) {
-    Sys* S = &g_sys[s];
-    int guard = 0;
-    if (t < S->spec.start) continue;
-    if (S->spec.burst && !S->burst_done) {
-      int k;
-      S->burst_done = 1;
-      for (k = 0; k < S->spec.maxcount && k < MAX_P && can_spawn(S); k++) spawn_one(S);
+static void sim_sys(Sys* S, float dt) {
+  int guard = 0;
+  if (!S || dt <= 0.f) return;
+  if (!S->instant_done) {
+    int k;
+    S->instant_done = 1;
+    /* eventfollow children are born from the parent, not on their own clock. */
+    if (!S->spec.follow) {
+      for (k = 0; k < S->spec.instant && can_spawn(S); k++) spawn_one(S, NULL);
     }
+  }
+  if (S->spec.follow && S->spec.parent >= 0 && S->spec.parent < g_nsys) {
+    int parents = g_sys[S->spec.parent].n;
+    if (S->spec.rate > 0.f && parents > 0) {
+      S->acc += S->spec.rate * dt * (float)parents;
+      while (S->acc >= 1.f && can_spawn(S) && guard++ < S->spec.maxcount) {
+        Part* host = &g_sys[S->spec.parent].p[S->rr % parents];
+        S->rr++;
+        spawn_one(S, host);
+        S->acc -= 1.f;
+      }
+    }
+  } else if (!S->spec.follow) {
     S->acc += S->spec.rate * dt;
-    while (S->acc >= 1.f && can_spawn(S) && guard++ < MAX_P) {
-      spawn_one(S);
+    while (S->acc >= 1.f && can_spawn(S) && guard++ < S->spec.maxcount) {
+      spawn_one(S, NULL);
       S->acc -= 1.f;
     }
-    integrate_sys(S, dt);
+  }
+  integrate_sys(S, dt);
+}
+
+static void sim_particles(float dt) {
+  int s;
+  if (dt <= 0.f || g_nsys <= 0 || !g_sys) return;
+  g_sim += (double)dt;
+  for (s = 0; s < g_nsys; s++) sim_sys(&g_sys[s], dt);
+}
+
+static float warm_horizon(const Sys* S) {
+  float h;
+  if (!S) return 0.f;
+  h = S->spec.start;
+  if (S->spec.follow && S->spec.parent >= 0 && S->spec.parent < g_nsys) {
+    float p = g_sys[S->spec.parent].spec.start;
+    if (p > h) h = p;
+  }
+  if (h > 12.f) h = 12.f;
+  return h;
+}
+
+static void warmup_particles(void) {
+  float horizon = 0.f, t, dt;
+  int s, logged = 0;
+  if (!g_sys || g_nsys <= 0) return;
+  for (s = 0; s < g_nsys; s++) {
+    if (g_sys[s].spec.start > 12.f && !logged) {
+      fprintf(stderr, "bendwall: particle starttime clamped\n");
+      logged = 1;
+    }
+    if (warm_horizon(&g_sys[s]) > horizon) horizon = warm_horizon(&g_sys[s]);
+  }
+  if (horizon <= 0.f) return;
+  t = 0.f;
+  while (t < horizon - 1e-4f) {
+    dt = 1.f / 30.f;
+    if (t + dt > horizon) dt = horizon - t;
+    g_sim += (double)dt;
+    for (s = 0; s < g_nsys; s++) {
+      if (warm_horizon(&g_sys[s]) > t) sim_sys(&g_sys[s], dt);
+    }
+    t += dt;
   }
 }
 
@@ -716,6 +1019,9 @@ static void free_part_batch(void) {
   g_part_vao = g_part_quad = g_part_inst = 0;
   g_part_view = g_part_samp = -1;
   g_part_tried = 0;
+  free(g_inst);
+  g_inst = NULL;
+  g_inst_cap = 0;
 }
 
 static int ensure_part_batch(void) {
@@ -743,7 +1049,7 @@ static int ensure_part_batch(void) {
   glVertexAttribDivisor(0, 0);
   glVertexAttribDivisor(1, 0);
   glBindBuffer(GL_ARRAY_BUFFER, g_part_inst);
-  glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(MAX_P * 11 * sizeof(float)), NULL, GL_DYNAMIC_DRAW);
+  glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(64 * 11 * sizeof(float)), NULL, GL_DYNAMIC_DRAW);
   glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, 11 * (GLsizei)sizeof(float), (void*)0);
   glEnableVertexAttribArray(2);
   glVertexAttribDivisor(2, 1);
@@ -789,18 +1095,17 @@ static void particle_tint(const Sys* S, const Part* p, float* sz, float* a, floa
   else
     *sz = p->size + S->spec.size_rate * p->age;
   *a = p->a;
+  /* fadeintime and fadeouttime are fractions of the lifetime. */
   if (S->spec.alphafade) {
-    if (S->spec.fade_in > 0.f || S->spec.fade_out > 0.f) {
-      float fin = 1.f, fout = 1.f;
-      if (S->spec.fade_in > 0.f) fin = p->age / S->spec.fade_in;
-      if (S->spec.fade_out > 0.f) fout = (p->life - p->age) / S->spec.fade_out;
-      if (fin < 0.f) fin = 0.f;
-      if (fin > 1.f) fin = 1.f;
-      if (fout < 0.f) fout = 0.f;
-      if (fout > 1.f) fout = 1.f;
-      *a *= fin * fout;
-    } else
-      *a *= 1.f - u;
+    float fin = 1.f, fout = 1.f;
+    if (S->spec.fade_in > 0.f && u < S->spec.fade_in) fin = u / S->spec.fade_in;
+    if (S->spec.fade_out > 0.f && S->spec.fade_out < 1.f && u > S->spec.fade_out)
+      fout = (1.f - u) / (1.f - S->spec.fade_out);
+    if (fin < 0.f) fin = 0.f;
+    if (fin > 1.f) fin = 1.f;
+    if (fout < 0.f) fout = 0.f;
+    if (fout > 1.f) fout = 1.f;
+    *a *= fin * fout;
   }
   *r = p->r;
   *g = p->g;
@@ -812,91 +1117,227 @@ static void particle_tint(const Sys* S, const Part* p, float* sz, float* a, floa
   }
 }
 
+static int part_frame(const Sys* S, const Part* p) {
+  int n, f;
+  float u, mul;
+  if (!S || !p) return 0;
+  n = S->nframe_tex;
+  if (n <= 1 || S->spec.anim == 0) return 0;
+  if (S->spec.anim == 1) {
+    f = p->frame;
+    if (f < 0) f = 0;
+    if (f >= n) f = n - 1;
+    return f;
+  }
+  u = p->life > 0.f ? p->age / p->life : 0.f;
+  if (u < 0.f) u = 0.f;
+  if (u > 1.f) u = 1.f;
+  mul = S->spec.seqmul;
+  f = (int)(u * (float)n * mul);
+  if (f < 0) f = 0;
+  if (n > 0) f %= n;
+  return f;
+}
+
+static float* inst_need(int n) {
+  float* p;
+  if (n < 1) n = 1;
+  if (n <= g_inst_cap) return g_inst;
+  p = (float*)realloc(g_inst, (size_t)n * 11u * sizeof(float));
+  if (!p) return NULL;
+  g_inst = p;
+  g_inst_cap = n;
+  return g_inst;
+}
+
+static void draw_rope(const Sys* S, const Part* p, float ox, float oy, float cover, float sz, float a, float r, float g, float b) {
+  float pts[ROPE_N + 2][2];
+  int n = 0, k, oldest, tex;
+  if (!S || !p || S->tex <= 0) return;
+  tex = S->tex;
+  oldest = (p->ri - p->rn + ROPE_N) % ROPE_N;
+  for (k = 0; k < p->rn; k++) {
+    int idx = (oldest + k) % ROPE_N;
+    float age = (float)g_sim - p->rt[idx];
+    if (age > S->spec.rope_len + 0.001f) continue;
+    pts[n][0] = p->rx[idx];
+    pts[n][1] = p->ry[idx];
+    n++;
+  }
+  if (n < 2 && p->lastdt > 0.f) {
+    pts[0][0] = p->x - p->vx * p->lastdt;
+    pts[0][1] = p->y - p->vy * p->lastdt;
+    pts[1][0] = p->x;
+    pts[1][1] = p->y;
+    n = 2;
+  }
+  for (k = 1; k < n; k++) {
+    float x0 = ox + pts[k - 1][0] * cover;
+    float y0 = oy + pts[k - 1][1] * cover;
+    float x1 = ox + pts[k][0] * cover;
+    float y1 = oy + pts[k][1] * cover;
+    float dx = x1 - x0, dy = y1 - y0;
+    float len = sqrtf(dx * dx + dy * dy);
+    float deg;
+    if (len < 0.5f) continue;
+    deg = atan2f(dy, dx) * 57.2957795f;
+    draw_sprite(g_copy_prog, tex, (x0 + x1) * 0.5f, (y0 + y1) * 0.5f, len, sz * cover, deg, a, r, g, b);
+  }
+}
+
 static void draw_particles(void) {
-  int s, i, batch;
+  int s, i, batch, pass;
   float ox, oy, cover;
-  if (g_nsys <= 0 || g_copy_prog <= 0) return;
+  if (g_nsys <= 0 || !g_sys || g_copy_prog <= 0) return;
   cover_of(&ox, &oy, &cover);
   batch = ensure_part_batch();
   glEnable(GL_BLEND);
   for (s = 0; s < g_nsys; s++) {
     Sys* S = &g_sys[s];
-    float inst[MAX_P * 11];
-    int n = 0;
-    if (S->tex <= 0) continue;
+    if (S->tex <= 0 && S->nframe_tex < 1) continue;
     if (S->spec.additive) glBlendFunc(GL_SRC_ALPHA, GL_ONE);
     else glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    for (i = 0; i < S->n; i++) {
-      Part* p = &S->p[i];
-      float sz, a, r, g, b, rad, c, sn, hx, hy;
-      particle_tint(S, p, &sz, &a, &r, &g, &b);
-      if (a <= 0.001f || sz < 0.5f) continue;
-      if (!batch) {
-        draw_sprite(g_copy_prog, S->tex,
-                    ox + p->x * cover, oy + p->y * cover,
-                    sz * cover, sz * cover, p->ang, a, r, g, b);
-        continue;
+    if (S->spec.rope) {
+      for (i = 0; i < S->n; i++) {
+        float sz, a, r, g, b;
+        particle_tint(S, &S->p[i], &sz, &a, &r, &g, &b);
+        if (a <= 0.001f || sz < 0.5f) continue;
+        draw_rope(S, &S->p[i], ox, oy, cover, sz, a, r, g, b);
       }
-      if (n >= MAX_P) continue;
-      rad = p->ang * 0.01745329251f;
-      c = cosf(rad);
-      sn = sinf(rad);
-      hx = sz * cover * 0.5f;
-      hy = hx;
-      inst[n * 11 + 0] = ox + p->x * cover;
-      inst[n * 11 + 1] = oy + p->y * cover;
-      inst[n * 11 + 2] = hx;
-      inst[n * 11 + 3] = hy;
-      inst[n * 11 + 4] = c;
-      inst[n * 11 + 5] = sn;
-      inst[n * 11 + 6] = a;
-      inst[n * 11 + 7] = 0.f;
-      inst[n * 11 + 8] = r;
-      inst[n * 11 + 9] = g;
-      inst[n * 11 + 10] = b;
-      n++;
+      continue;
     }
-    if (batch && n > 0) part_batch_draw(S->tex, inst, n);
+    for (pass = 0; pass < (S->nframe_tex > 0 ? S->nframe_tex : 1); pass++) {
+      float* inst = NULL;
+      int n = 0;
+      int tex = S->nframe_tex > pass ? S->frame_tex[pass] : S->tex;
+      if (tex <= 0) continue;
+      if (batch) inst = inst_need(S->n > 0 ? S->n : 1);
+      for (i = 0; i < S->n; i++) {
+        Part* p = &S->p[i];
+        float sz, a, r, g, b, c, sn, hx, hy, aspect;
+        int fr, fw, fh;
+        if (part_frame(S, p) != pass) continue;
+        particle_tint(S, p, &sz, &a, &r, &g, &b);
+        if (a <= 0.001f || sz < 0.5f) continue;
+        fr = pass;
+        fw = S->nframe_tex > fr ? S->frame_w[fr] : 1;
+        fh = S->nframe_tex > fr ? S->frame_h[fr] : 1;
+        aspect = fw > 0 ? (float)fh / (float)fw : 1.f;
+        if (!batch || !inst) {
+          draw_sprite(g_copy_prog, tex,
+                      ox + p->x * cover, oy + p->y * cover,
+                      sz * cover, sz * cover * aspect, p->ang * 57.2957795f, a, r, g, b);
+          continue;
+        }
+        c = cosf(p->ang);
+        sn = sinf(p->ang);
+        hx = sz * cover * 0.5f;
+        hy = hx * aspect;
+        inst[n * 11 + 0] = ox + p->x * cover;
+        inst[n * 11 + 1] = oy + p->y * cover;
+        inst[n * 11 + 2] = hx;
+        inst[n * 11 + 3] = hy;
+        inst[n * 11 + 4] = c;
+        inst[n * 11 + 5] = sn;
+        inst[n * 11 + 6] = a;
+        inst[n * 11 + 7] = 0.f;
+        inst[n * 11 + 8] = r;
+        inst[n * 11 + 9] = g;
+        inst[n * 11 + 10] = b;
+        n++;
+      }
+      if (batch && inst && n > 0) part_batch_draw(tex, inst, n);
+    }
   }
   glDisable(GL_BLEND);
+}
+
+static int upload_frames(Sys* S, const BwPartSys* src) {
+  int n, i;
+  if (!S || !src) return 0;
+  if (src->nframes >= 2 && src->sheets && src->frames) {
+    n = src->nframes;
+    if (n > 16) n = 16;
+    for (i = 0; i < n; i++) {
+      uint8_t* px = NULL;
+      int w = 0, h = 0, tex;
+      if (!bw_tex_crop(src->sheets, src->nsheets, &src->frames[i], &px, &w, &h) || !px) continue;
+      tex = bw_gl_image(0, w, h, px, w * h * 4);
+      free(px);
+      if (tex <= 0) continue;
+      S->frame_tex[S->nframe_tex] = tex;
+      S->frame_w[S->nframe_tex] = w;
+      S->frame_h[S->nframe_tex] = h;
+      S->nframe_tex++;
+    }
+  }
+  if (S->nframe_tex < 1 && src->rgba && src->tw > 0 && src->th > 0) {
+    int tex = bw_gl_image(0, src->tw, src->th, src->rgba, src->tw * src->th * 4);
+    if (tex > 0) {
+      S->frame_tex[0] = tex;
+      S->frame_w[0] = src->tw;
+      S->frame_h[0] = src->th;
+      S->nframe_tex = 1;
+    }
+  }
+  S->tex = S->nframe_tex > 0 ? S->frame_tex[0] : 0;
+  return S->tex > 0;
 }
 
 static void load_particles(const BwPlan* plan) {
   int i;
   g_nsys = 0;
-  if (!plan) return;
-  for (i = 0; i < plan->nparts && g_nsys < MAX_SYS; i++) {
+  g_pid = 1;
+  g_sim = 0;
+  if (!plan || plan->nparts < 1) return;
+  g_sys = (Sys*)calloc((size_t)plan->nparts, sizeof(Sys));
+  if (!g_sys) return;
+  g_nsys = plan->nparts;
+  for (i = 0; i < plan->nparts; i++) {
     const BwPartSys* src = &plan->parts[i];
-    int tex;
-    if (!src->rgba || src->tw < 1 || src->th < 1) continue;
-    tex = bw_gl_image(0, src->tw, src->th, src->rgba, src->tw * src->th * 4);
-    if (tex <= 0) continue;
-    memset(&g_sys[g_nsys], 0, sizeof g_sys[g_nsys]);
-    g_sys[g_nsys].spec = *src;
-    g_sys[g_nsys].spec.rgba = NULL;
-    g_sys[g_nsys].tex = tex;
-    g_sys[g_nsys].rng = 1u + (uint32_t)g_nsys * 997u;
-    if (g_sys[g_nsys].spec.maxcount > MAX_P) g_sys[g_nsys].spec.maxcount = MAX_P;
-    if (g_sys[g_nsys].spec.maxcount < 0) g_sys[g_nsys].spec.maxcount = 0;
-    g_nsys++;
+    Sys* S = &g_sys[i];
+    int cap;
+    S->spec = *src;
+    S->spec.rgba = NULL;
+    S->spec.sheets = NULL;
+    S->spec.frames = NULL;
+    S->rng = 1u + (uint32_t)i * 997u;
+    cap = S->spec.maxcount;
+    if (cap < 0) cap = 0;
+    if (cap > MAX_COUNT) cap = MAX_COUNT;
+    S->spec.maxcount = cap;
+    if (cap > 0) S->p = (Part*)calloc((size_t)cap, sizeof(Part));
+    upload_frames(S, src);
   }
+  /* starttime pre-simulates. It does not delay the first visible frame,
+     and it does not move the wallpaper clock. */
+  warmup_particles();
 }
 
 static void free_particle_tex(void) {
-  int i;
-  for (i = 0; i < g_nsys; i++) {
-    if (g_sys[i].tex > 0) {
-      GLuint t = (GLuint)g_sys[i].tex;
-      glDeleteTextures(1, &t);
+  int i, j;
+  if (g_sys) {
+    for (i = 0; i < g_nsys; i++) {
+      for (j = 0; j < g_sys[i].nframe_tex; j++) {
+        if (g_sys[i].frame_tex[j] > 0) {
+          GLuint t = (GLuint)g_sys[i].frame_tex[j];
+          glDeleteTextures(1, &t);
+        }
+      }
+      free(g_sys[i].p);
+      g_sys[i].p = NULL;
       g_sys[i].tex = 0;
+      g_sys[i].n = 0;
     }
-    g_sys[i].n = 0;
+    free(g_sys);
   }
+  g_sys = NULL;
   g_nsys = 0;
 }
 
 static int draw(void) {
   int bar_h, band_w, i, scale, nread;
+  double tdraw = mono_us();
   const float* bands[6];
   const char* names[6] = {
     "g_AudioSpectrum16Left", "g_AudioSpectrum16Right",
@@ -963,12 +1404,22 @@ static int draw(void) {
     }
   }
   glDisable(GL_BLEND);
+  g_gl_us = (int)(mono_us() - tdraw);
+  if (!g_readback) {
+    bw_gl_export_color();
+    glFlush();
+    g_read_us = 0;
+    bw_gl_end();
+    return 1;
+  }
   {
+    double tr = mono_us();
     uint8_t* next = (uint8_t*)realloc(g_px, (size_t)g_w * (size_t)g_h * 4);
     if (!next) { bw_gl_end(); return 0; }
     g_px = next;
+    nread = bw_gl_read(g_px, g_w * g_h * 4);
+    g_read_us = (int)(mono_us() - tr);
   }
-  nread = bw_gl_read(g_px, g_w * g_h * 4);
   bw_gl_end();
   return nread > 0;
 }
@@ -1017,7 +1468,7 @@ static void reset_plan(void) {
   g_dir[0] = 0;
 }
 
-void bw_play_close(void) {
+static void play_close_unlocked(void) {
   if (g_gl && bw_gl_begin()) {
     if (g_tex > 0) { GLuint t = (GLuint)g_tex; glDeleteTextures(1, &t); }
     if (g_text_tex > 0) { GLuint t = (GLuint)g_text_tex; glDeleteTextures(1, &t); }
@@ -1107,11 +1558,22 @@ void bw_play_audio(const float* interleaved, int nfloats) {
   bw_audio_inject(interleaved, nfloats);
 }
 
+void bw_play_close(void) {
+  pthread_mutex_lock(&g_play_mu);
+  play_close_unlocked();
+  pthread_mutex_unlock(&g_play_mu);
+}
+
 int bw_play_open(const char* dir, int w, int h) {
   BwPlan plan;
   const char* assets;
-  int i;
-  bw_play_close();
+  int i, keep_read, opened;
+  pthread_mutex_lock(&g_play_mu);
+  keep_read = g_readback;
+  play_close_unlocked();
+  g_readback = keep_read;
+  g_ptr_ok = 0;
+  g_sim_us = g_gl_us = g_read_us = 0;
   if (w < 8) w = 8;
   if (h < 8) h = 8;
   if (w > 1920) w = 1920;
@@ -1149,6 +1611,7 @@ int bw_play_open(const char* dir, int w, int h) {
   if (!bw_gl_init(g_w, g_h)) {
     bw_plan_free(&plan);
     snprintf(g_line, sizeof g_line, "kind=fail shader=0");
+    pthread_mutex_unlock(&g_play_mu);
     return 0;
   }
   g_gl = 1;
@@ -1197,15 +1660,22 @@ int bw_play_open(const char* dir, int w, int h) {
   spectrum_update();
   g_open = draw();
   refresh_line();
-  return g_open;
+  opened = g_open;
+  pthread_mutex_unlock(&g_play_mu);
+  return opened;
 }
 
 int bw_play_step(int dt_ms) {
   int guard = 0;
-  if (!g_open) return 0;
+  double t0;
+  int ok = 0;
+  pthread_mutex_lock(&g_play_mu);
+  if (!g_open) goto step_out;
   if (dt_ms < 0) dt_ms = 0;
   g_time_ms += dt_ms;
+  t0 = mono_us();
   sim_particles((float)dt_ms / 1000.f);
+  g_sim_us = (int)(mono_us() - t0);
   if (g_vid.open) {
     g_vid.acc += dt_ms;
     /* A one-second step on a 30fps clip is ~30 frames. The old cap of 8
@@ -1217,18 +1687,168 @@ int bw_play_step(int dt_ms) {
     }
   }
   spectrum_update();
-  if (!draw()) return 0;
+  if (!draw()) goto step_out;
   refresh_line();
-  return 1;
+  ok = 1;
+step_out:
+  pthread_mutex_unlock(&g_play_mu);
+  return ok;
 }
 
 int bw_play_rgba(uint8_t* dst, int cap) {
-  int n;
-  if (!dst || !g_px) return 0;
+  int n, gotn = 0;
+  pthread_mutex_lock(&g_play_mu);
+  if (!dst || !g_open) goto rgba_out;
   n = g_w * g_h * 4;
-  if (cap < n) return 0;
+  if (cap < n) goto rgba_out;
+  if (!g_readback || !g_px) {
+    uint8_t* next;
+    int got;
+    if (!bw_gl_begin()) goto rgba_out;
+    if (!bw_gl_bind(0)) { bw_gl_end(); goto rgba_out; }
+    next = (uint8_t*)realloc(g_px, (size_t)n);
+    if (!next) { bw_gl_end(); goto rgba_out; }
+    g_px = next;
+    got = bw_gl_read(g_px, n);
+    bw_gl_end();
+    if (got <= 0) goto rgba_out;
+  }
+  if (!g_px) goto rgba_out;
   memcpy(dst, g_px, (size_t)n);
-  return n;
+  gotn = n;
+rgba_out:
+  pthread_mutex_unlock(&g_play_mu);
+  return gotn;
+}
+
+void bw_play_set_readback(int on) {
+  pthread_mutex_lock(&g_play_mu);
+  g_readback = on ? 1 : 0;
+  pthread_mutex_unlock(&g_play_mu);
+}
+
+void bw_play_pointer(float x, float y, float item_w, float item_h, int valid) {
+  float ox, oy, cover;
+  pthread_mutex_lock(&g_play_mu);
+  if (!valid || item_w < 1.f || item_h < 1.f || g_w < 1 || g_h < 1) {
+    g_ptr_ok = 0;
+    pthread_mutex_unlock(&g_play_mu);
+    return;
+  }
+  cover_of(&ox, &oy, &cover);
+  if (cover < 1e-6f) cover = 1.f;
+  /* Item pixels map through the same cover fit as the scene. */
+  g_ptr_x = ((x / item_w) * (float)g_w - ox) / cover;
+  g_ptr_y = ((y / item_h) * (float)g_h - oy) / cover;
+  g_ptr_ok = 1;
+  pthread_mutex_unlock(&g_play_mu);
+}
+
+void bw_play_profile(int* sim_us, int* gl_us, int* read_us) {
+  pthread_mutex_lock(&g_play_mu);
+  if (sim_us) *sim_us = g_sim_us;
+  if (gl_us) *gl_us = g_gl_us;
+  if (read_us) *read_us = g_read_us;
+  pthread_mutex_unlock(&g_play_mu);
+}
+
+int bw_play_exported(void) { return bw_gl_color_image() != NULL; }
+
+static int blit_unlocked(void) {
+  static const char* vs =
+    "#version 330 core\n"
+    "layout(location=0) in vec2 a;\n"
+    "out vec2 v;\n"
+    "void main(){\n"
+    "  v = a * 0.5 + 0.5;\n"
+    "  gl_Position = vec4(a, 0.0, 1.0);\n"
+    "}\n";
+  static const char* fs =
+    "#version 330 core\n"
+    "in vec2 v;\n"
+    "uniform sampler2D g_Texture0;\n"
+    "out vec4 fragColor;\n"
+    "void main(){ fragColor = texture(g_Texture0, v); }\n";
+  static GLuint prog, vao, buf, tex;
+  static EGLContext ctx = EGL_NO_CONTEXT;
+  static int failed;
+  void* img = bw_gl_color_image();
+  EGLContext cur;
+  typedef void (*PFN_TARGET)(GLenum, void*);
+  PFN_TARGET target;
+  GLint loc;
+  if (!img) return 0;
+  cur = eglGetCurrentContext();
+  if (cur == EGL_NO_CONTEXT) return 0;
+  if (cur != ctx) {
+    prog = vao = buf = tex = 0;
+    ctx = cur;
+    failed = 0;
+  }
+  if (failed) return 0;
+  target = (PFN_TARGET)eglGetProcAddress("glEGLImageTargetTexture2DOES");
+  if (!target) {
+    failed = 1;
+    return 0;
+  }
+  if (!prog) {
+    GLuint vsid, fsid;
+    const float quad[8] = {-1.f, -1.f, 1.f, -1.f, -1.f, 1.f, 1.f, 1.f};
+    int ok;
+    vsid = glCreateShader(GL_VERTEX_SHADER);
+    fsid = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(vsid, 1, &vs, NULL);
+    glShaderSource(fsid, 1, &fs, NULL);
+    glCompileShader(vsid);
+    glCompileShader(fsid);
+    prog = glCreateProgram();
+    glAttachShader(prog, vsid);
+    glAttachShader(prog, fsid);
+    glBindAttribLocation(prog, 0, "a");
+    glLinkProgram(prog);
+    glGetProgramiv(prog, GL_LINK_STATUS, &ok);
+    glDeleteShader(vsid);
+    glDeleteShader(fsid);
+    if (!ok) {
+      glDeleteProgram(prog);
+      prog = 0;
+      failed = 1;
+      return 0;
+    }
+    glGenVertexArrays(1, &vao);
+    glGenBuffers(1, &buf);
+    glBindVertexArray(vao);
+    glBindBuffer(GL_ARRAY_BUFFER, buf);
+    glBufferData(GL_ARRAY_BUFFER, sizeof quad, quad, GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, (void*)0);
+    glEnableVertexAttribArray(0);
+    glBindVertexArray(0);
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+  }
+  glBindTexture(GL_TEXTURE_2D, tex);
+  target(GL_TEXTURE_2D, img);
+  glUseProgram(prog);
+  loc = glGetUniformLocation(prog, "g_Texture0");
+  if (loc >= 0) glUniform1i(loc, 0);
+  glBindVertexArray(vao);
+  glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+  glBindVertexArray(0);
+  glUseProgram(0);
+  glBindTexture(GL_TEXTURE_2D, 0);
+  return 1;
+}
+
+int bw_play_blit(void) {
+  int ok;
+  pthread_mutex_lock(&g_play_mu);
+  ok = blit_unlocked();
+  pthread_mutex_unlock(&g_play_mu);
+  return ok;
 }
 
 int bw_play_size(int* w, int* h) {

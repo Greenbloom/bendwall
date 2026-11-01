@@ -3,14 +3,15 @@
 #include "engine.h"
 
 #include <QImage>
-#include <QQuickPaintedItem>
+#include <QQuickFramebufferObject>
 #include <QString>
 #include <QTimer>
 #include <QVariantList>
 
-/* Paints the live scene image. framePath is the still PNG used by the
-   offscreen harness. live draws GL frames instead, with an fps readout. */
-class FrameItem : public QQuickPaintedItem {
+/* Live scene. The still PNG is the offscreen harness. A live window steps
+   the player with readback off and blits the color texture on the GPU.
+   frameImage readback is only for --watch-diff. */
+class FrameItem : public QQuickFramebufferObject {
     Q_OBJECT
     Q_PROPERTY(QString framePath READ framePath WRITE setFramePath NOTIFY framePathChanged)
     Q_PROPERTY(qreal pointerX READ pointerX WRITE setPointerX NOTIFY pointerChanged)
@@ -42,7 +43,7 @@ public:
     qreal videoVolume() const { return m_vol; }
     bool videoMuted() const { return m_mute; }
     int steps() const { return m_steps; }
-    QImage frameImage() const { return m_img; }
+    QImage frameImage() const;
     void setFramePath(const QString& path);
     void setPointerX(qreal x);
     void setPointerY(qreal y);
@@ -51,7 +52,11 @@ public:
     void setMediaDir(const QString& dir);
     void setVideoVolume(qreal volume);
     void setVideoMuted(bool on);
-    void paint(QPainter* painter) override;
+    Renderer* createRenderer() const override;
+
+    Engine* engine() { return &m_engine; }
+    const QImage& stillImage() const { return m_still; }
+    bool havePointer() const { return m_havePtr; }
 
 signals:
     void framePathChanged();
@@ -73,10 +78,10 @@ private:
     void tick();
 
     QString m_path;
-    QImage m_img;
     QImage m_still;
     qreal m_px = 0;
     qreal m_py = 0;
+    bool m_havePtr = false;
     bool m_live = false;
     bool m_pinned = false;
     QString m_item;

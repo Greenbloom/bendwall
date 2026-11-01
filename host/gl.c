@@ -5,6 +5,7 @@
    byte of the buffer, which we treat as the top-left of the image. */
 #define GL_GLEXT_PROTOTYPES 1
 #include <EGL/egl.h>
+#include <EGL/eglext.h>
 #include <GL/gl.h>
 #include <GL/glext.h>
 #include <png.h>
@@ -16,6 +17,17 @@ static EGLDisplay g_dpy;
 static EGLSurface g_surf;
 static EGLContext g_ctx;
 static int g_w, g_h, g_ok;
+static EGLImageKHR g_img = EGL_NO_IMAGE_KHR;
+static PFNEGLCREATEIMAGEKHRPROC g_create_image;
+static PFNEGLDESTROYIMAGEKHRPROC g_destroy_image;
+static int g_img_tried;
+
+#ifndef EGL_GL_TEXTURE_2D_KHR
+#define EGL_GL_TEXTURE_2D_KHR 0x30B5
+#endif
+#ifndef EGL_IMAGE_PRESERVED_KHR
+#define EGL_IMAGE_PRESERVED_KHR 0x30D2
+#endif
 static GLuint g_fbo[2], g_ctex[2], g_vao, g_vbo;
 static char g_log[8192];
 static int g_logn;
@@ -79,9 +91,19 @@ static int make_target(int i) {
   return 1;
 }
 
+static void destroy_color_image(void) {
+  if (g_img == EGL_NO_IMAGE_KHR || !g_destroy_image || g_dpy == EGL_NO_DISPLAY) {
+    g_img = EGL_NO_IMAGE_KHR;
+    return;
+  }
+  g_destroy_image(g_dpy, g_img);
+  g_img = EGL_NO_IMAGE_KHR;
+}
+
 void bw_gl_shutdown(void) {
   if (!g_ok) return;
   eglMakeCurrent(g_dpy, g_surf, g_surf, g_ctx);
+  destroy_color_image();
   if (g_vbo) glDeleteBuffers(1, &g_vbo);
   if (g_vao) glDeleteVertexArrays(1, &g_vao);
   if (g_fbo[0] || g_fbo[1]) glDeleteFramebuffers(2, g_fbo);
@@ -308,6 +330,30 @@ int bw_gl_fvn(int prog, const char* name, const float* v, int count) {
   glUniform1fv(loc, count, v);
   return 1;
 }
+
+static int ensure_image_procs(void) {
+  const char* ext;
+  if (g_img_tried) return g_create_image && g_destroy_image;
+  g_img_tried = 1;
+  ext = eglQueryString(g_dpy, EGL_EXTENSIONS);
+  if (!ext || !strstr(ext, "EGL_KHR_image")) return 0;
+  g_create_image = (PFNEGLCREATEIMAGEKHRPROC)eglGetProcAddress("eglCreateImageKHR");
+  g_destroy_image = (PFNEGLDESTROYIMAGEKHRPROC)eglGetProcAddress("eglDestroyImageKHR");
+  return g_create_image && g_destroy_image;
+}
+
+int bw_gl_export_color(void) {
+  EGLint attr[] = {EGL_IMAGE_PRESERVED_KHR, EGL_TRUE, EGL_NONE};
+  if (!g_ok || !g_ctex[0] || !ensure_image_procs()) return 0;
+  /* The color texture is allocated once. The image stays valid while
+     later frames rewrite those texels. */
+  if (g_img != EGL_NO_IMAGE_KHR) return 1;
+  g_img = g_create_image(g_dpy, g_ctx, EGL_GL_TEXTURE_2D_KHR, (EGLClientBuffer)(uintptr_t)g_ctex[0], attr);
+  if (g_img == EGL_NO_IMAGE_KHR) return 0;
+  return 1;
+}
+
+void* bw_gl_color_image(void) { return g_img == EGL_NO_IMAGE_KHR ? NULL : (void*)g_img; }
 
 int bw_gl_read(uint8_t* dst, int n) {
   uint8_t* raw;

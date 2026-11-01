@@ -112,7 +112,7 @@ static int glyph_of(unsigned char ch) {
 }
 
 int bw_text_rgba(const char* s, int* w, int* h, uint8_t** rgba) {
-  int n, i, x, y, stride, g;
+  int n, i, x, y, stride, g, lines, maxc, col, rowi, capn;
   uint8_t* buf;
   if (w) *w = 0;
   if (h) *h = 0;
@@ -120,19 +120,44 @@ int bw_text_rgba(const char* s, int* w, int* h, uint8_t** rgba) {
   if (!s || !w || !h || !rgba) return 0;
   n = (int)strlen(s);
   if (n < 1) return 0;
-  if (n > 160) n = 160;
-  *w = n * 6;
-  *h = 7;
+  /* A page of scene text is longer than a corner label. Newlines break lines. */
+  capn = n > 1024 ? 1024 : n;
+  lines = 1;
+  maxc = 0;
+  col = 0;
+  for (i = 0; i < capn; i++) {
+    if (s[i] == '\n') {
+      if (col > maxc) maxc = col;
+      col = 0;
+      lines++;
+    } else
+      col++;
+  }
+  if (col > maxc) maxc = col;
+  if (maxc < 1) maxc = 1;
+  if (lines > 48) lines = 48;
+  *w = maxc * 6;
+  *h = lines == 1 ? 7 : lines * 8;
   stride = *w * 4;
-  buf = (uint8_t*)calloc((size_t)stride * 7, 1);
+  buf = (uint8_t*)calloc((size_t)stride * (size_t)(*h), 1);
   if (!buf) return 0;
-  for (i = 0; i < n; i++) {
+  col = 0;
+  rowi = 0;
+  for (i = 0; i < capn && rowi < lines; i++) {
+    if (s[i] == '\n') {
+      col = 0;
+      rowi++;
+      continue;
+    }
+    if (col >= maxc) continue;
     g = glyph_of((unsigned char)s[i]);
     for (y = 0; y < 7; y++) {
       unsigned char row = GLYPH[g][y];
+      int py = lines == 1 ? y : rowi * 8 + y;
+      if (py >= *h) continue;
       for (x = 0; x < 5; x++) {
         if (row & (0x10 >> x)) {
-          uint8_t* p = buf + (size_t)y * (size_t)stride + (size_t)(i * 6 + x) * 4;
+          uint8_t* p = buf + (size_t)py * (size_t)stride + (size_t)(col * 6 + x) * 4;
           p[0] = 255;
           p[1] = 255;
           p[2] = 255;
@@ -140,6 +165,7 @@ int bw_text_rgba(const char* s, int* w, int* h, uint8_t** rgba) {
         }
       }
     }
+    col++;
   }
   *rgba = buf;
   return 1;

@@ -579,6 +579,311 @@ def write_resolve():
                + ",".join(objs) + "]}\n")
 
 
+def rg_sheet():
+    """Two frames side by side: red, then green. Not a Workshop sheet."""
+    row = RED * 4 + GREEN * 4
+    rgba = row * 4
+    return tex(
+        fmt=0, flags=0x4, tw=8, th=4, iw=8, ih=4, bv=2,
+        images=[[mip(8, 4, rgba)]],
+        sprites={
+            "sv": 3,
+            "sw": 8,
+            "sh": 4,
+            "frames": [
+                {"img": 0, "t": 1.0, "x": 0, "y": 0, "w": 4, "wy": 0, "hx": 0, "h": 4},
+                {"img": 0, "t": 1.0, "x": 4, "y": 0, "w": 4, "wy": 0, "hx": 0, "h": 4},
+            ],
+        },
+    )
+
+
+def write_part_scene(root, sw, sh, particle_name, particle_json, objects):
+    plate = bytes([12, 16, 28, 255])
+    white = bytes([255, 255, 255, 255])
+    project(root)
+    write(os.path.join(root, "textures", "bg.png"), png_rgba(4, 4, plate * 16))
+    write(os.path.join(root, "textures", "dot.png"), png_rgba(4, 4, white * 16))
+    write_text(os.path.join(root, "materials", "p.json"),
+               '{"passes": [{"blending": "translucent", "textures": ["textures/dot.png"]}]}\n')
+    write_text(os.path.join(root, "particles", particle_name), particle_json)
+    bg = ('{"name":"bg","image":"textures/bg.png","origin":"%g %g 0","size":"%d %d 0"}'
+          % (sw / 2.0, sh / 2.0, sw, sh))
+    write_text(os.path.join(root, "scene.json"),
+               '{"general":{"orthogonalprojection":{"width":%d,"height":%d}},"objects":[%s,%s]}\n'
+               % (sw, sh, bg, objects))
+
+
+def write_fidelity():
+    """Synthetic systems. Values are ours; nothing here is a Workshop extract."""
+    white = bytes([255, 255, 255, 255])
+    body = """{
+  "material": "materials/p.json",
+  "maxcount": 64,
+  "starttime": 0,
+  "emitter": [{"name": "boxrandom", "rate": 40}],
+  "initializer": [
+    {"name": "lifetimerandom", "min": 4, "max": 4},
+    {"name": "sizerandom", "min": 18, "max": 18},
+    {"name": "alpharandom", "min": 1, "max": 1},
+    {"name": "colorrandom", "min": "1 1 1", "max": "1 1 1"},
+    {"name": "velocityrandom", "min": "0 0 0", "max": "0 0 0"}
+  ],
+  "operator": [{"name": "movement", "gravity": "0 0 0", "drag": 0}],
+  "renderer": [{"name": "sprite"}]
+}
+"""
+    write_part_scene(os.path.join(PLAY, "boxdef"), 640, 360, "p.json", body,
+                     '{"name":"p","particle":"particles/p.json","origin":"320 180 0","scale":"1 1 1"}')
+
+    body = body.replace('"rate": 40', '"rate": 0, "instantaneous": 24, "distancemax": 40')
+    body = body.replace('"min": 18, "max": 18', '"min": 10, "max": 10')
+    body = body.replace('"maxcount": 64', '"maxcount": 32')
+    write_part_scene(os.path.join(PLAY, "boxnum"), 160, 90, "p.json", body,
+                     '{"name":"p","particle":"particles/p.json","origin":"80 45 0"}')
+
+    body = """{
+  "material": "materials/p.json",
+  "maxcount": 8,
+  "starttime": 0,
+  "emitter": [{"name": "boxrandom", "rate": 0, "instantaneous": 6, "distancemax": "8 0 0", "directions": "1 1 0"}],
+  "initializer": [
+    {"name": "lifetimerandom", "min": 4, "max": 4},
+    {"name": "sizerandom", "min": 20, "max": 20},
+    {"name": "velocityrandom", "min": "0 0 0", "max": "0 0 0"}
+  ],
+  "operator": [{"name": "movement", "gravity": "0 0 0", "drag": 0}],
+  "renderer": [{"name": "sprite"}]
+}
+"""
+    write_part_scene(os.path.join(PLAY, "boxfix"), 160, 90, "p.json", body,
+                     '{"name":"p","particle":"particles/p.json","origin":"40 45 0"}')
+
+    body = """{
+  "material": "materials/p.json",
+  "maxcount": 4,
+  "starttime": 0,
+  "emitter": [{"name": "sphererandom", "rate": 1, "directions": "1 0 0", "distancemin": 0, "distancemax": 0, "speedmin": 0, "speedmax": 0}],
+  "initializer": [
+    {"name": "lifetimerandom", "min": 3, "max": 3},
+    {"name": "sizerandom", "min": 14, "max": 14},
+    {"name": "velocityrandom", "min": "80 0 0", "max": "80 0 0"}
+  ],
+  "operator": [{"name": "movement", "gravity": "0 0 0", "drag": 0}],
+  "renderer": [{"name": "sprite"}]
+}
+"""
+    write_part_scene(os.path.join(PLAY, "velrand"), 160, 90, "p.json", body,
+                     '{"name":"p","particle":"particles/p.json","origin":"24 45 0"}')
+
+    body = """{
+  "material": "materials/p.json",
+  "maxcount": 4,
+  "starttime": 0,
+  "emitter": [{"name": "sphererandom", "rate": 1, "directions": "1 0 0", "distancemin": 0, "distancemax": 0, "speedmin": 0, "speedmax": 0}],
+  "initializer": [
+    {"name": "lifetimerandom", "min": 3, "max": 3},
+    {"name": "sizerandom", "min": 14, "max": 14},
+    {"name": "turbulentvelocityrandom", "scale": 0, "offset": 0, "speedmin": 80, "speedmax": 80, "forward": "1 0 0", "right": "0 1 0"}
+  ],
+  "operator": [{"name": "movement", "gravity": "0 0 0", "drag": 0}],
+  "renderer": [{"name": "sprite"}]
+}
+"""
+    write_part_scene(os.path.join(PLAY, "turb"), 160, 90, "p.json", body,
+                     '{"name":"p","particle":"particles/p.json","origin":"24 45 0"}')
+
+    bar = os.path.join(PLAY, "spin")
+    write_part_scene(bar, 160, 90, "p.json", """{
+  "material": "materials/p.json",
+  "maxcount": 2,
+  "starttime": 0,
+  "emitter": [{"name": "sphererandom", "rate": 0, "instantaneous": 1, "directions": "1 0 0", "distancemax": 0, "speedmin": 0, "speedmax": 0}],
+  "initializer": [
+    {"name": "lifetimerandom", "min": 4, "max": 4},
+    {"name": "sizerandom", "min": 32, "max": 32},
+    {"name": "rotationrandom", "min": "0 0 0", "max": "0 0 0"},
+    {"name": "angularvelocityrandom", "min": "0 0 1.570796", "max": "0 0 1.570796"}
+  ],
+  "operator": [
+    {"name": "movement", "gravity": "0 0 0", "drag": 0},
+    {"name": "angularmovement", "force": "0 0 0", "drag": 0}
+  ],
+  "renderer": [{"name": "sprite"}]
+}
+""", '{"name":"p","particle":"particles/p.json","origin":"80 45 0"}')
+    write(os.path.join(bar, "textures", "bar.png"), png_rgba(16, 2, white * 32))
+    write_text(os.path.join(bar, "materials", "p.json"),
+               '{"passes": [{"blending": "translucent", "textures": ["textures/bar.png"]}]}\n')
+
+    write_part_scene(os.path.join(PLAY, "warm"), 160, 90, "p.json", """{
+  "material": "materials/p.json",
+  "maxcount": 40,
+  "starttime": 1,
+  "emitter": [{"name": "sphererandom", "rate": 20, "directions": "1 0 0", "distancemax": 0, "speedmin": 0, "speedmax": 0}],
+  "initializer": [
+    {"name": "lifetimerandom", "min": 5, "max": 5},
+    {"name": "sizerandom", "min": 6, "max": 6}
+  ],
+  "operator": [{"name": "movement", "gravity": "0 0 0", "drag": 0}],
+  "renderer": [{"name": "sprite"}]
+}
+""", '{"name":"p","particle":"particles/p.json","origin":"80 45 0"}')
+
+    write_part_scene(os.path.join(PLAY, "mouse"), 160, 90, "p.json", """{
+  "material": "materials/p.json",
+  "maxcount": 4,
+  "starttime": 0,
+  "controlpoint": [{"id": 1, "flags": 1, "offset": "0 0 0"}],
+  "emitter": [{"name": "sphererandom", "rate": 0, "instantaneous": 1, "directions": "1 0 0", "distancemax": 0, "speedmin": 0, "speedmax": 0}],
+  "initializer": [
+    {"name": "lifetimerandom", "min": 4, "max": 4},
+    {"name": "sizerandom", "min": 16, "max": 16},
+    {"name": "velocityrandom", "min": "0 0 0", "max": "0 0 0"}
+  ],
+  "operator": [
+    {"name": "movement", "gravity": "0 0 0", "drag": 0},
+    {"name": "controlpointattract", "controlpoint": 1, "scale": -5000, "threshold": 64}
+  ],
+  "renderer": [{"name": "sprite"}]
+}
+""", '{"name":"p","particle":"particles/p.json","origin":"30 45 0"}')
+
+    write_part_scene(os.path.join(PLAY, "rope"), 160, 90, "p.json", """{
+  "material": "materials/p.json",
+  "maxcount": 4,
+  "starttime": 0,
+  "emitter": [{"name": "sphererandom", "rate": 0, "instantaneous": 1, "directions": "1 0 0", "distancemax": 0, "speedmin": 0, "speedmax": 0}],
+  "initializer": [
+    {"name": "lifetimerandom", "min": 3, "max": 3},
+    {"name": "sizerandom", "min": 8, "max": 8},
+    {"name": "velocityrandom", "min": "100 0 0", "max": "100 0 0"}
+  ],
+  "operator": [{"name": "movement", "gravity": "0 0 0", "drag": 0}],
+  "renderer": [{"name": "ropetrail", "length": 0.5}]
+}
+""", '{"name":"p","particle":"particles/p.json","origin":"20 45 0"}')
+
+    follow = os.path.join(PLAY, "follow")
+    write_part_scene(follow, 160, 90, "star.json", """{
+  "material": "materials/p.json",
+  "maxcount": 4,
+  "starttime": 0,
+  "children": [{"type": "eventfollow", "name": "particles/glow.json"}],
+  "emitter": [{"name": "sphererandom", "rate": 0, "instantaneous": 1, "directions": "1 0 0", "distancemax": 0, "speedmin": 0, "speedmax": 0}],
+  "initializer": [
+    {"name": "lifetimerandom", "min": 3, "max": 3},
+    {"name": "sizerandom", "min": 4, "max": 4},
+    {"name": "velocityrandom", "min": "100 0 0", "max": "100 0 0"}
+  ],
+  "operator": [{"name": "movement", "gravity": "0 0 0", "drag": 0}],
+  "renderer": [{"name": "sprite"}]
+}
+""", '{"name":"p","particle":"particles/star.json","origin":"20 45 0"}')
+    write_text(os.path.join(follow, "particles", "glow.json"), """{
+  "material": "materials/p.json",
+  "maxcount": 4,
+  "starttime": 0,
+  "emitter": [{"name": "sphererandom", "rate": 0, "instantaneous": 1, "distancemax": 0, "speedmin": 0, "speedmax": 0}],
+  "initializer": [
+    {"name": "lifetimerandom", "min": 3, "max": 3},
+    {"name": "sizerandom", "min": 20, "max": 20},
+    {"name": "velocityrandom", "min": "0 0 0", "max": "0 0 0"}
+  ],
+  "operator": [{"name": "movement", "gravity": "0 0 0", "drag": 0}],
+  "renderer": [{"name": "sprite"}]
+}
+""")
+
+    sheet = os.path.join(PLAY, "frames")
+    write_part_scene(sheet, 160, 90, "rand.json", """{
+  "material": "materials/sheet.json",
+  "maxcount": 24,
+  "starttime": 0,
+  "animationmode": "randomframe",
+  "sequencemultiplier": 3,
+  "emitter": [{"name": "boxrandom", "rate": 0, "instantaneous": 16, "distancemax": "70 0 0", "directions": "1 1 0"}],
+  "initializer": [
+    {"name": "lifetimerandom", "min": 4, "max": 4},
+    {"name": "sizerandom", "min": 10, "max": 10},
+    {"name": "velocityrandom", "min": "0 0 0", "max": "0 0 0"}
+  ],
+  "operator": [{"name": "movement", "gravity": "0 0 0", "drag": 0}],
+  "renderer": [{"name": "sprite"}]
+}
+""", '{"name":"p","particle":"particles/rand.json","origin":"80 45 0"}')
+    write(os.path.join(sheet, "textures", "sheet.tex"), rg_sheet())
+    write_text(os.path.join(sheet, "materials", "sheet.json"),
+               '{"passes": [{"blending": "translucent", "textures": ["textures/sheet.tex"]}]}\n')
+    write_text(os.path.join(sheet, "particles", "seq.json"), """{
+  "material": "materials/sheet.json",
+  "maxcount": 2,
+  "starttime": 0,
+  "animationmode": "sequence",
+  "sequencemultiplier": 1,
+  "emitter": [{"name": "sphererandom", "rate": 0, "instantaneous": 1, "distancemax": 0, "speedmin": 0, "speedmax": 0}],
+  "initializer": [
+    {"name": "lifetimerandom", "min": 2, "max": 2},
+    {"name": "sizerandom", "min": 40, "max": 40},
+    {"name": "velocityrandom", "min": "0 0 0", "max": "0 0 0"}
+  ],
+  "operator": [{"name": "movement", "gravity": "0 0 0", "drag": 0}],
+  "renderer": [{"name": "sprite"}]
+}
+""")
+    # Second object for the sequence sprite, beside the random cloud.
+    write_text(os.path.join(sheet, "scene.json"), """{
+  "general": {"orthogonalprojection": {"width": 160, "height": 90}},
+  "objects": [
+    {"name": "bg", "image": "textures/bg.png", "origin": "80 45 0", "size": "160 90 0"},
+    {"name": "rand", "particle": "particles/rand.json", "origin": "80 20 0"},
+    {"name": "seq", "particle": "particles/seq.json", "origin": "80 70 0"}
+  ]
+}
+""")
+
+    page = os.path.join(PLAY, "page")
+    project(page)
+    write(os.path.join(page, "textures", "bg.png"), png_rgba(4, 4, bytes([12, 16, 28, 255]) * 16))
+    write_text(os.path.join(page, "scene.json"), """{
+  "general": {"orthogonalprojection": {"width": 160, "height": 90}},
+  "objects": [
+    {"name": "bg", "image": "textures/bg.png", "origin": "80 45 0", "size": "160 90 0"},
+    {"name": "page", "origin": "80 45 0", "size": "150 70 0",
+     "text": {"value": "HACK PAGE\\nsecond line of the note\\nthird line stays on the rect"}}
+  ]
+}
+""")
+
+    write_part_scene(os.path.join(PLAY, "gapart"), 160, 90, "p.json", """{
+  "material": "materials/p.json",
+  "maxcount": 4,
+  "emitter": [{"name": "layerimage", "rate": 5}],
+  "initializer": [{"name": "lifetimerandom", "min": 1, "max": 1}],
+  "operator": [{"name": "movement", "gravity": "0 0 0", "drag": 0}],
+  "renderer": [{"name": "sprite"}]
+}
+""", '{"name":"p","particle":"particles/p.json","origin":"80 45 0"}')
+
+    cpus = []
+    for i in range(6):
+        cpus.append('{"name":"e%d","particle":"particles/p.json","origin":"%d 270 0"}' % (i, 80 + i * 140))
+    write_part_scene(os.path.join(PLAY, "livecpu"), 960, 540, "p.json", """{
+  "material": "materials/p.json",
+  "maxcount": 800,
+  "starttime": 0,
+  "emitter": [{"name": "boxrandom", "rate": 60, "distancemax": "80 40 0"}],
+  "initializer": [
+    {"name": "lifetimerandom", "min": 4, "max": 4},
+    {"name": "sizerandom", "min": 6, "max": 6},
+    {"name": "velocityrandom", "min": "0 0 0", "max": "0 0 0"}
+  ],
+  "operator": [{"name": "movement", "gravity": "0 0 0", "drag": 0}],
+  "renderer": [{"name": "sprite"}]
+}
+""", ",".join(cpus))
+
+
 def main():
     write(os.path.join(PLAY, "texscene", "scene.pkg"), scene_pkg())
     write(os.path.join(PLAY, "texscene", "decoy.png"), png_rgba(8, 8, YELLOW * 64))
@@ -689,6 +994,7 @@ def main():
                '{ "type": "scene", "file": "gifscene.json", "title": "Hack page" }\n')
     write(os.path.join(PLAY, "sheet.tex"), sheet_tex())
     write_spark()
+    write_fidelity()
     write_vidaud()
     write_resolve()
     print("mktexscene ok")

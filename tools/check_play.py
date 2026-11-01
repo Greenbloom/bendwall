@@ -208,8 +208,57 @@ blank = [int(x) for x in grab(r"BLANK (\d+) (\d+) (\d+)").groups()]
 if blank[0] < 200 or blank[1] > 40 or blank[2] > 40:
     raise SystemExit(f"blank {blank}")
 swarm = grab(r"SWARM cpu=([0-9.]+) alive=(\d+)")
-if float(swarm.group(1)) >= 30.0 or not (500 <= int(swarm.group(2)) <= 640):
+if float(swarm.group(1)) >= 30.0 or not (60 <= int(swarm.group(2)) <= 100):
     raise SystemExit(swarm.group(0))
+boxdef = int(grab(r"BOXDEF off=(\d+)").group(1))
+if boxdef < 20:
+    raise SystemExit(f"box default did not spread ({boxdef})")
+boxnum = int(grab(r"BOXNUM off=(\d+)").group(1))
+if boxnum < 1:
+    raise SystemExit("numeric box did not spread")
+boxfix = grab(r"BOXFIX center=(\d+) (\d+) (\d+) far=(\d+) (\d+) (\d+) off=(\d+)")
+if int(boxfix.group(1)) < 200 or int(boxfix.group(4)) > 40 or int(boxfix.group(7)) > 0:
+    raise SystemExit(boxfix.group(0))
+vel = grab(r"VEL home=(\d+) (\d+) (\d+) away=(\d+) (\d+) (\d+)")
+if int(vel.group(1)) > 40 or int(vel.group(4)) < 200:
+    raise SystemExit(vel.group(0))
+turb = grab(r"TURB home=(\d+) (\d+) (\d+) away=(\d+) (\d+) (\d+)")
+if int(turb.group(1)) > 40 or int(turb.group(4)) < 200:
+    raise SystemExit(turb.group(0))
+spin = grab(r"SPIN flat=(\d+) (\d+) (\d+) turn=(\d+) (\d+) (\d+)")
+if int(spin.group(1)) > 40 or int(spin.group(4)) < 200:
+    raise SystemExit(spin.group(0))
+warm = grab(r"WARM alive=(\d+) t=(\d+)")
+if not (10 <= int(warm.group(1)) <= 40) or warm.group(2) != "0":
+    raise SystemExit(warm.group(0))
+mouse = grab(r"MOUSE still=(\d+) (\d+) (\d+) push=(\d+) (\d+) (\d+)")
+if int(mouse.group(1)) < 200 or int(mouse.group(4)) > 40:
+    raise SystemExit(mouse.group(0))
+rope = grab(r"ROPE mid=(\d+) (\d+) (\d+) side=(\d+) (\d+) (\d+)")
+if int(rope.group(1)) < 200 or int(rope.group(4)) > 40:
+    raise SystemExit(rope.group(0))
+follow = grab(r"FOLLOW on=(\d+) (\d+) (\d+) off=(\d+) (\d+) (\d+)")
+if int(follow.group(1)) < 200 or int(follow.group(4)) > 40:
+    raise SystemExit(follow.group(0))
+frame = grab(r"FRAME rand r=(\d+) g=(\d+) seq0=(\d+) (\d+) (\d+) seq1=(\d+) (\d+) (\d+)")
+if int(frame.group(1)) < 1 or int(frame.group(2)) < 1:
+    raise SystemExit(frame.group(0))
+if int(frame.group(3)) < 200 or int(frame.group(4)) > 40 or int(frame.group(7)) < 200 or int(frame.group(6)) > 40:
+    raise SystemExit(frame.group(0))
+page = int(grab(r"PAGE right=(\d+)").group(1))
+if page < 8:
+    raise SystemExit(f"placed text page is blank ({page})")
+live = grab(
+    r"LIVECPU back=([0-9.]+) sim=(\d+) gl=(\d+) read=(\d+) "
+    r"present=([0-9.]+) psim=(\d+) pgl=(\d+) pread=(\d+) export=(\d+)"
+)
+if int(live.group(8)) != 0:
+    raise SystemExit("present path still read pixels\n" + live.group(0))
+blit = grab(r"BLIT ok=(\d+) (\d+) (\d+) (\d+)")
+if blit.group(1) != "1" or int(blit.group(4)) < 10:
+    raise SystemExit(blit.group(0))
+if "bendwall: unsupported particle emitter layerimage" not in err:
+    raise SystemExit("layerimage was not logged\n" + err)
 if "materials/particle/gone.tex" not in err:
     raise SystemExit("named particle miss was not logged\n" + err)
 if "(no path)" not in err:

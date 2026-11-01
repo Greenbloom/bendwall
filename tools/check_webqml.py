@@ -39,10 +39,16 @@ if "WebEngineProfilePrototype" in web or "profileProto" in web:
     raise SystemExit("web profile still instantiates WebEngineProfilePrototype")
 if "WebEngineProfile {" in web:
     raise SystemExit("WebEngineProfile is created directly")
-if "userScripts.insert" not in web or "view.profile" not in web:
-    raise SystemExit("shim is not inserted on the view profile")
-if "bendwallQtVersion" not in web:
-    raise SystemExit("web profile is not gated on the runtime Qt version")
+if "WebEngineScript {" in web:
+    raise SystemExit("WebEngineScript element is not creatable on Qt 6.11")
+if "WebEngine.script()" not in web:
+    raise SystemExit("shim is not built with WebEngine.script()")
+script_at = web.find("WebEngine.script()")
+url_at = web.find("view.url = host.pageUrl()")
+if script_at < 0 or url_at < 0 or script_at > url_at:
+    raise SystemExit("user script is not inserted before the url")
+if "userScripts.insert" not in web or "view.userScripts" not in web:
+    raise SystemExit("shim is not inserted on the view userScripts collection")
 if shim != host:
     raise SystemExit("package webshim.js drifted from host/webshim.js")
 if "applyUserProperties" not in shim or "wallpaperRegisterAudioListener" not in shim:

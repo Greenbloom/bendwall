@@ -4,9 +4,9 @@ import pathlib, sys
 text = pathlib.Path(sys.argv[1]).read_text()
 lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
 ok = True
-if "SCRIPT fn=hi!" not in lines:
-    ok = False
-if "SCRIPT body=1" not in lines:
+script_off = "SCRIPT fn=off" in lines and "SCRIPT body=off" in lines
+script_on = "SCRIPT fn=hi!" in lines and "SCRIPT body=1" in lines
+if not script_off and not script_on:
     ok = False
 caps = [ln for ln in lines if ln.startswith("AUDIO capture=")]
 vids = [ln for ln in lines if ln.startswith("VIDEO ")]

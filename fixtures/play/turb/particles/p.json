@@ -1,0 +1,13 @@
+{
+  "material": "materials/p.json",
+  "maxcount": 4,
+  "starttime": 0,
+  "emitter": [{"name": "sphererandom", "rate": 1, "directions": "1 0 0", "distancemin": 0, "distancemax": 0, "speedmin": 0, "speedmax": 0}],
+  "initializer": [
+    {"name": "lifetimerandom", "min": 3, "max": 3},
+    {"name": "sizerandom", "min": 14, "max": 14},
+    {"name": "turbulentvelocityrandom", "scale": 0, "offset": 0, "speedmin": 80, "speedmax": 80, "forward": "1 0 0", "right": "0 1 0"}
+  ],
+  "operator": [{"name": "movement", "gravity": "0 0 0", "drag": 0}],
+  "renderer": [{"name": "sprite"}]
+}

@@ -1,15 +1,19 @@
-/* SceneScript host. Bend has no JavaScript runtime; QuickJS runs update(). */
-#if defined(__has_include)
-#  if __has_include(<quickjs/quickjs.h>)
+/* SceneScript host. Bend has no JavaScript runtime. QuickJS runs update()
+   when the header and the library are both present. Otherwise update
+   returns NULL and the probe reports off. */
+#if !defined(BW_NO_QUICKJS)
+#  if defined(__has_include) && __has_include(<quickjs/quickjs.h>)
 #    include <quickjs/quickjs.h>
-#  else
+#    define BW_HAVE_QUICKJS 1
+#  elif defined(__has_include) && __has_include(<quickjs.h>)
 #    include <quickjs.h>
+#    define BW_HAVE_QUICKJS 1
 #  endif
-#else
-#  include <quickjs.h>
 #endif
 #include <stdlib.h>
 #include <string.h>
+
+#if defined(BW_HAVE_QUICKJS)
 
 static char* dup_js(JSContext* ctx, JSValue v) {
   const char* s;
@@ -65,3 +69,10 @@ done:
   JS_FreeRuntime(rt);
   return out;
 }
+#else
+char* bw_script_update(const char* src, const char* value) {
+  (void)src;
+  (void)value;
+  return NULL;
+}
+#endif

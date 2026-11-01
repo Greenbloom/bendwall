@@ -1,0 +1,12 @@
+{
+  "material": "materials/p.json",
+  "maxcount": 40,
+  "starttime": 1,
+  "emitter": [{"name": "sphererandom", "rate": 20, "directions": "1 0 0", "distancemax": 0, "speedmin": 0, "speedmax": 0}],
+  "initializer": [
+    {"name": "lifetimerandom", "min": 5, "max": 5},
+    {"name": "sizerandom", "min": 6, "max": 6}
+  ],
+  "operator": [{"name": "movement", "gravity": "0 0 0", "drag": 0}],
+  "renderer": [{"name": "sprite"}]
+}

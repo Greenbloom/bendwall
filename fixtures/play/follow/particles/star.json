@@ -1,0 +1,14 @@
+{
+  "material": "materials/p.json",
+  "maxcount": 4,
+  "starttime": 0,
+  "children": [{"type": "eventfollow", "name": "particles/glow.json"}],
+  "emitter": [{"name": "sphererandom", "rate": 0, "instantaneous": 1, "directions": "1 0 0", "distancemax": 0, "speedmin": 0, "speedmax": 0}],
+  "initializer": [
+    {"name": "lifetimerandom", "min": 3, "max": 3},
+    {"name": "sizerandom", "min": 4, "max": 4},
+    {"name": "velocityrandom", "min": "100 0 0", "max": "100 0 0"}
+  ],
+  "operator": [{"name": "movement", "gravity": "0 0 0", "drag": 0}],
+  "renderer": [{"name": "sprite"}]
+}

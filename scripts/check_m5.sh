@@ -14,27 +14,50 @@ bend t_audio.bend -o build/audio
 timeout 8 ./build/audio > build/audio.out
 python3 tools/check_audio.py build/audio.out
 
+QJS_CFLAGS=""
 QJS_LIB=""
-for c in /usr/lib/quickjs/libquickjs.a \
-         /usr/lib/libquickjs.a \
-         /usr/lib64/libquickjs.a \
-         /usr/lib/x86_64-linux-gnu/libquickjs.a; do
-  if [ -f "$c" ]; then
-    QJS_LIB="$c"
-    break
-  fi
-done
-if [ -z "$QJS_LIB" ]; then
-  if pkg-config --exists quickjs 2>/dev/null; then
-    QJS_LIB="$(pkg-config --libs quickjs)"
-  else
-    QJS_LIB="-lquickjs"
-  fi
+if pkg-config --exists quickjs 2>/dev/null; then
+  QJS_CFLAGS="$(pkg-config --cflags quickjs)"
+  QJS_LIB="$(pkg-config --libs quickjs)"
+else
+  for c in /usr/lib/quickjs/libquickjs.a \
+           /usr/lib/libquickjs.a \
+           /usr/lib64/libquickjs.a \
+           /usr/lib/x86_64-linux-gnu/libquickjs.a; do
+    if [ -f "$c" ]; then
+      QJS_LIB="$c"
+      break
+    fi
+  done
 fi
 # Headers: <quickjs/quickjs.h> on Arch and Debian. No -I/usr/include/quickjs,
 # which would make that nested include look one directory too deep.
+# A missing header or library compiles the stub. The probe then prints off.
+cat > build/qjsprobe.c << 'EOF'
+#if !defined(BW_NO_QUICKJS)
+#  if defined(__has_include) && __has_include(<quickjs/quickjs.h>)
+#    include <quickjs/quickjs.h>
+#    define BW_HAVE_QUICKJS 1
+#  elif defined(__has_include) && __has_include(<quickjs.h>)
+#    include <quickjs.h>
+#    define BW_HAVE_QUICKJS 1
+#  endif
+#endif
+#ifndef BW_HAVE_QUICKJS
+#error no quickjs
+#endif
+int main(void) { return 0; }
+EOF
+if [ -n "$QJS_LIB" ] && cc -O2 -o build/qjsprobe build/qjsprobe.c $QJS_CFLAGS $QJS_LIB -lm -ldl -lpthread >/tmp/qjsprobe.log 2>&1; then
+  echo "quickjs linked"
+else
+  echo "quickjs not linked; SceneScript is off"
+  QJS_CFLAGS="-DBW_NO_QUICKJS"
+  QJS_LIB=""
+fi
 cc -O2 -o build/m5probe host/m5probe.c host/audio.c host/script.c host/video.c host/gl.c \
   $(pkg-config --cflags libavcodec libavformat libswscale libavutil) \
+  $QJS_CFLAGS \
   $QJS_LIB \
   $(pkg-config --libs libavcodec libavformat libswscale libavutil) \
   -lpng -ljpeg -lEGL -lGL \

@@ -4,6 +4,9 @@
 #include "plan.h"
 #include "player.h"
 
+#define GL_GLEXT_PROTOTYPES 1
+#include <EGL/egl.h>
+#include <GL/gl.h>
 #include <locale.h>
 #include <math.h>
 #include <stdio.h>
@@ -43,6 +46,104 @@ static int white_count(void) {
   for (i = 0; i < w * h; i++) {
     uint8_t* p = px + (size_t)i * 4;
     if (p[0] > 250 && p[1] > 250 && p[2] > 250) c++;
+  }
+  free(px);
+  return c;
+}
+
+static int off_white(int cy, int band) {
+  int w = 0, h = 0, n, x, y, c = 0;
+  uint8_t* px;
+  if (!bw_play_size(&w, &h)) return 0;
+  px = (uint8_t*)malloc((size_t)w * (size_t)h * 4);
+  if (!px) return 0;
+  n = bw_play_rgba(px, w * h * 4);
+  if (n < w * h * 4) { free(px); return 0; }
+  for (y = 0; y < h; y++) {
+    if (abs(y - cy) <= band) continue;
+    for (x = 0; x < w; x++) {
+      uint8_t* p = px + ((size_t)y * (size_t)w + (size_t)x) * 4;
+      if (p[0] > 200 && p[1] > 200 && p[2] > 200) c++;
+    }
+  }
+  free(px);
+  return c;
+}
+
+static int white_x(int xmin) {
+  int w = 0, h = 0, n, x, y, c = 0;
+  uint8_t* px;
+  if (!bw_play_size(&w, &h)) return 0;
+  px = (uint8_t*)malloc((size_t)w * (size_t)h * 4);
+  if (!px) return 0;
+  n = bw_play_rgba(px, w * h * 4);
+  if (n < w * h * 4) { free(px); return 0; }
+  for (y = 0; y < h; y++) {
+    for (x = xmin; x < w; x++) {
+      uint8_t* p = px + ((size_t)y * (size_t)w + (size_t)x) * 4;
+      if (p[0] > 250 && p[1] > 250 && p[2] > 250) c++;
+    }
+  }
+  free(px);
+  return c;
+}
+
+static int blit_sample(int* r, int* g, int* b) {
+  EGLDisplay dpy;
+  EGLConfig cfg;
+  EGLSurface surf;
+  EGLContext ctx;
+  EGLint n = 0;
+  EGLint attr[] = {
+    EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
+    EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
+    EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_ALPHA_SIZE, 8,
+    EGL_NONE
+  };
+  EGLint pbuf[] = {EGL_WIDTH, 64, EGL_HEIGHT, 64, EGL_NONE};
+  EGLint ctxattr[] = {
+    EGL_CONTEXT_MAJOR_VERSION, 3,
+    EGL_CONTEXT_MINOR_VERSION, 3,
+    EGL_CONTEXT_OPENGL_PROFILE_MASK, EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT,
+    EGL_NONE
+  };
+  uint8_t px[4];
+  dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+  if (dpy == EGL_NO_DISPLAY || !eglInitialize(dpy, NULL, NULL)) return 0;
+  if (!eglChooseConfig(dpy, attr, &cfg, 1, &n) || n < 1) return 0;
+  if (!eglBindAPI(EGL_OPENGL_API)) return 0;
+  surf = eglCreatePbufferSurface(dpy, cfg, pbuf);
+  ctx = eglCreateContext(dpy, cfg, EGL_NO_CONTEXT, ctxattr);
+  if (ctx == EGL_NO_CONTEXT) ctx = eglCreateContext(dpy, cfg, EGL_NO_CONTEXT, NULL);
+  if (surf == EGL_NO_SURFACE || ctx == EGL_NO_CONTEXT) return 0;
+  if (!eglMakeCurrent(dpy, surf, surf, ctx)) return 0;
+  glViewport(0, 0, 64, 64);
+  if (!bw_play_blit()) {
+    eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+    return 0;
+  }
+  glReadPixels(32, 32, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+  *r = px[0];
+  *g = px[1];
+  *b = px[2];
+  eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+  eglDestroyContext(dpy, ctx);
+  eglDestroySurface(dpy, surf);
+  return 1;
+}
+
+static int color_count(int want_r, int want_g) {
+  int w = 0, h = 0, n, i, c = 0;
+  uint8_t* px;
+  if (!bw_play_size(&w, &h)) return 0;
+  px = (uint8_t*)malloc((size_t)w * (size_t)h * 4);
+  if (!px) return 0;
+  n = bw_play_rgba(px, w * h * 4);
+  if (n < w * h * 4) { free(px); return 0; }
+  for (i = 0; i < w * h; i++) {
+    uint8_t* p = px + (size_t)i * 4;
+    if (want_r && p[0] > 200 && p[1] < 40 && p[2] < 40) c++;
+    if (want_g && p[1] > 200 && p[0] < 40 && p[2] < 40) c++;
   }
   free(px);
   return c;
@@ -696,6 +797,142 @@ int main(int argc, char** argv) {
   bw_play_close();
 
   bw_play_audio(NULL, 0);
+  snprintf(path, sizeof path, "%s/boxdef", root);
+  if (!bw_play_open(path, 640, 360) || !bw_play_step(1000)) return 1;
+  {
+    int n = off_white(180, 20);
+    printf("BOXDEF off=%d\n", n);
+    if (n < 20) bad = 1;
+  }
+  bw_play_close();
+
+  snprintf(path, sizeof path, "%s/boxnum", root);
+  if (!bw_play_open(path, 160, 90) || !bw_play_step(50)) return 1;
+  {
+    int n = off_white(45, 14);
+    printf("BOXNUM off=%d\n", n);
+    if (n < 1) bad = 1;
+  }
+  bw_play_close();
+
+  snprintf(path, sizeof path, "%s/boxfix", root);
+  if (!bw_play_open(path, 160, 90) || !bw_play_step(50)) return 1;
+  {
+    int cr = 0, cg = 0, cb = 0, fr = 0, fg = 0, fb = 0, yr = 0, yg = 0, yb = 0;
+    int n = off_white(45, 16);
+    if (!at(40, 45, &cr, &cg, &cb) || !at(100, 45, &fr, &fg, &fb) || !at(40, 15, &yr, &yg, &yb)) return 1;
+    printf("BOXFIX center=%d %d %d far=%d %d %d off=%d\n", cr, cg, cb, fr, fg, fb, n);
+    if (cr < 200 || fr > 40 || yr > 40 || n > 0) bad = 1;
+  }
+  bw_play_close();
+
+  snprintf(path, sizeof path, "%s/velrand", root);
+  if (!bw_play_open(path, 160, 90) || !bw_play_step(1000)) return 1;
+  {
+    int hr = 0, hg = 0, hb = 0, ar = 0, ag = 0, ab = 0;
+    if (!at(24, 45, &hr, &hg, &hb) || !at(104, 45, &ar, &ag, &ab)) return 1;
+    printf("VEL home=%d %d %d away=%d %d %d\n", hr, hg, hb, ar, ag, ab);
+    if (hr > 40 || ar < 200) bad = 1;
+  }
+  bw_play_close();
+
+  snprintf(path, sizeof path, "%s/turb", root);
+  if (!bw_play_open(path, 160, 90) || !bw_play_step(1000)) return 1;
+  {
+    int hr = 0, hg = 0, hb = 0, ar = 0, ag = 0, ab = 0;
+    if (!at(24, 45, &hr, &hg, &hb) || !at(104, 45, &ar, &ag, &ab)) return 1;
+    printf("TURB home=%d %d %d away=%d %d %d\n", hr, hg, hb, ar, ag, ab);
+    if (hr > 40 || ar < 200) bad = 1;
+  }
+  bw_play_close();
+
+  snprintf(path, sizeof path, "%s/spin", root);
+  if (!bw_play_open(path, 160, 90) || !bw_play_step(16)) return 1;
+  {
+    int r0 = 0, g0 = 0, b0 = 0, r1 = 0, g1 = 0, b1 = 0;
+    if (!at(80, 35, &r0, &g0, &b0)) return 1;
+    if (!bw_play_step(1000) || !at(80, 35, &r1, &g1, &b1)) return 1;
+    printf("SPIN flat=%d %d %d turn=%d %d %d\n", r0, g0, b0, r1, g1, b1);
+    if (r0 > 40 || r1 < 200) bad = 1;
+  }
+  bw_play_close();
+
+  snprintf(path, sizeof path, "%s/warm", root);
+  if (!bw_play_open(path, 160, 90)) return 1;
+  {
+    const char* line = bw_play_line();
+    const char* ap = line ? strstr(line, "alive=") : NULL;
+    const char* tp = line ? strstr(line, " t=") : NULL;
+    int alive = ap ? atoi(ap + 6) : 0;
+    int t = tp ? atoi(tp + 3) : -1;
+    printf("WARM alive=%d t=%d\n", alive, t);
+    if (alive < 10 || alive > 40 || t != 0) bad = 1;
+  }
+  bw_play_close();
+
+  snprintf(path, sizeof path, "%s/mouse", root);
+  if (!bw_play_open(path, 160, 90) || !bw_play_step(200)) return 1;
+  {
+    int r0 = 0, g0 = 0, b0 = 0, r1 = 0, g1 = 0, b1 = 0;
+    if (!at(30, 45, &r0, &g0, &b0)) return 1;
+    bw_play_pointer(30.f, 10.f, 160.f, 90.f, 1);
+    /* movement runs before controlpointattract, so the push shows on the next step. */
+    if (!bw_play_step(200) || !bw_play_step(200) || !at(30, 45, &r1, &g1, &b1)) return 1;
+    printf("MOUSE still=%d %d %d push=%d %d %d\n", r0, g0, b0, r1, g1, b1);
+    if (r0 < 200 || r1 > 40) bad = 1;
+  }
+  bw_play_close();
+
+  snprintf(path, sizeof path, "%s/rope", root);
+  if (!bw_play_open(path, 160, 90) || !bw_play_step(500)) return 1;
+  {
+    int mr = 0, mg = 0, mb = 0, sr = 0, sg = 0, sb = 0;
+    if (!at(45, 45, &mr, &mg, &mb) || !at(45, 61, &sr, &sg, &sb)) return 1;
+    printf("ROPE mid=%d %d %d side=%d %d %d\n", mr, mg, mb, sr, sg, sb);
+    if (mr < 200 || sr > 40) bad = 1;
+  }
+  bw_play_close();
+
+  snprintf(path, sizeof path, "%s/follow", root);
+  if (!bw_play_open(path, 160, 90) || !bw_play_step(500)) return 1;
+  {
+    int ar = 0, ag = 0, ab = 0, br = 0, bg = 0, bb = 0;
+    if (!at(70, 53, &ar, &ag, &ab) || !at(20, 53, &br, &bg, &bb)) return 1;
+    printf("FOLLOW on=%d %d %d off=%d %d %d\n", ar, ag, ab, br, bg, bb);
+    if (ar < 200 || br > 40) bad = 1;
+  }
+  bw_play_close();
+
+  snprintf(path, sizeof path, "%s/frames", root);
+  if (!bw_play_open(path, 160, 90) || !bw_play_step(50)) return 1;
+  {
+    int red = color_count(1, 0);
+    int grn = color_count(0, 1);
+    int r0 = 0, g0 = 0, b0 = 0, r1 = 0, g1 = 0, b1 = 0;
+    if (!at(80, 70, &r0, &g0, &b0)) return 1;
+    if (!bw_play_step(1000) || !at(80, 70, &r1, &g1, &b1)) return 1;
+    red = color_count(1, 0);
+    grn = color_count(0, 1);
+    printf("FRAME rand r=%d g=%d seq0=%d %d %d seq1=%d %d %d\n", red, grn, r0, g0, b0, r1, g1, b1);
+    if (red < 1 || grn < 1) bad = 1;
+    if (r0 < 200 || g0 > 40 || g1 < 200 || r1 > 40) bad = 1;
+  }
+  bw_play_close();
+
+  snprintf(path, sizeof path, "%s/page", root);
+  if (!bw_play_open(path, 160, 90)) return 1;
+  {
+    int n = white_x(70);
+    printf("PAGE right=%d\n", n);
+    if (n < 8) bad = 1;
+  }
+  bw_play_close();
+
+  snprintf(path, sizeof path, "%s/gapart", root);
+  if (!bw_play_open(path, 160, 90)) return 1;
+  bw_play_close();
+
+  bw_play_audio(NULL, 0);
   snprintf(path, sizeof path, "%s/swarm", root);
   if (!bw_play_open(path, 640, 360)) {
     fprintf(stderr, "open swarm failed\n%s\n", bw_play_line());
@@ -744,7 +981,8 @@ int main(int argc, char** argv) {
     ap = line ? strstr(line, "alive=") : NULL;
     alive = ap ? atoi(ap + 6) : 0;
     printf("SWARM cpu=%.1f alive=%d wall=%.3f\n", cpu, alive, wall);
-    if (alive < 500 || alive > 640) bad = 1;
+    /* instantaneous is a count. 8 emitters, one each, plus rate 8 over ~1s. */
+    if (alive < 60 || alive > 100) bad = 1;
     if (cpu >= 30.0) bad = 1;
     (void)wall;
   }
@@ -848,6 +1086,104 @@ int main(int argc, char** argv) {
     bw_play_set_video_mute(0);
     bw_play_set_video_duck(-1);
   }
+
+  snprintf(path, sizeof path, "%s/livecpu", root);
+  if (!bw_play_open(path, 960, 540)) return 1;
+  {
+    struct timespec t0, t1;
+    long ticks0 = 0, ticks1 = 0, clk;
+    double back = 0, present = 0, wall;
+    int i, sim = 0, glus = 0, rd = 0, psim = 0, pgl = 0, prd = 0, expb = 0;
+    long accs, accg, accr;
+    FILE* stf;
+    char buf[1024];
+    char* rp;
+    unsigned long ut, stm;
+    if (!bw_play_step(33)) return 1;
+    accs = accg = accr = 0;
+    ut = stm = 0;
+    stf = fopen("/proc/self/stat", "r");
+    if (stf && fgets(buf, sizeof buf, stf)) {
+      rp = strrchr(buf, ')');
+      if (rp && sscanf(rp + 1, " %*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %lu %lu", &ut, &stm) == 2)
+        ticks0 = (long)(ut + stm);
+    }
+    if (stf) fclose(stf);
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    for (i = 0; i < 20; i++) {
+      int s = 0, g = 0, r = 0;
+      if (!bw_play_step(33)) return 1;
+      bw_play_profile(&s, &g, &r);
+      accs += s;
+      accg += g;
+      accr += r;
+    }
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    ut = stm = 0;
+    ticks1 = ticks0;
+    stf = fopen("/proc/self/stat", "r");
+    if (stf && fgets(buf, sizeof buf, stf)) {
+      rp = strrchr(buf, ')');
+      if (rp && sscanf(rp + 1, " %*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %lu %lu", &ut, &stm) == 2)
+        ticks1 = (long)(ut + stm);
+    }
+    if (stf) fclose(stf);
+    clk = sysconf(_SC_CLK_TCK);
+    if (clk < 1) clk = 100;
+    wall = (double)(t1.tv_sec - t0.tv_sec) + (double)(t1.tv_nsec - t0.tv_nsec) / 1e9;
+    (void)wall;
+    back = ((double)(ticks1 - ticks0) / (double)clk) / (20.0 * 0.033) * 100.0;
+    sim = (int)(accs / 20);
+    glus = (int)(accg / 20);
+    rd = (int)(accr / 20);
+    bw_play_set_readback(0);
+    if (!bw_play_step(33)) return 1;
+    accs = accg = accr = 0;
+    ut = stm = 0;
+    ticks0 = 0;
+    stf = fopen("/proc/self/stat", "r");
+    if (stf && fgets(buf, sizeof buf, stf)) {
+      rp = strrchr(buf, ')');
+      if (rp && sscanf(rp + 1, " %*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %lu %lu", &ut, &stm) == 2)
+        ticks0 = (long)(ut + stm);
+    }
+    if (stf) fclose(stf);
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    for (i = 0; i < 20; i++) {
+      int s = 0, g = 0, r = 0;
+      if (!bw_play_step(33)) return 1;
+      bw_play_profile(&s, &g, &r);
+      accs += s;
+      accg += g;
+      accr += r;
+    }
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    ut = stm = 0;
+    ticks1 = ticks0;
+    stf = fopen("/proc/self/stat", "r");
+    if (stf && fgets(buf, sizeof buf, stf)) {
+      rp = strrchr(buf, ')');
+      if (rp && sscanf(rp + 1, " %*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %lu %lu", &ut, &stm) == 2)
+        ticks1 = (long)(ut + stm);
+    }
+    if (stf) fclose(stf);
+    present = ((double)(ticks1 - ticks0) / (double)clk) / (20.0 * 0.033) * 100.0;
+    psim = (int)(accs / 20);
+    pgl = (int)(accg / 20);
+    prd = (int)(accr / 20);
+    expb = bw_play_exported();
+    printf("LIVECPU back=%.1f sim=%d gl=%d read=%d present=%.1f psim=%d pgl=%d pread=%d export=%d\n",
+           back, sim, glus, rd, present, psim, pgl, prd, expb);
+    if (prd != 0) bad = 1;
+    {
+      int br = 0, bg = 0, bb = 0, bok;
+      bok = blit_sample(&br, &bg, &bb);
+      printf("BLIT ok=%d %d %d %d\n", bok, br, bg, bb);
+      if (!bok || bb < 10) bad = 1;
+    }
+    bw_play_set_readback(1);
+  }
+  bw_play_close();
 
   if (!diff) bad = 1;
   if (b16 < 0.9f || b32 < 0.9f || b64 < 0.9f || r16 > 0.05f) bad = 1;

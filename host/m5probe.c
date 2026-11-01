@@ -16,10 +16,10 @@ int main(int argc, char** argv) {
   cap = bw_audio_capture(tmp, 8);
   printf("AUDIO capture=%d\n", cap);
   s = bw_script_update("function update(value){ return value + \"!\"; }", "hi");
-  printf("SCRIPT fn=%s\n", s ? s : "");
+  printf("SCRIPT fn=%s\n", s ? s : "off");
   free(s);
   s = bw_script_update("return value;", "1");
-  printf("SCRIPT body=%s\n", s ? s : "");
+  printf("SCRIPT body=%s\n", s ? s : "off");
   free(s);
   if (!bw_video_rgba(vid, &w, &h, &px)) {
     printf("VIDEO fail\n");

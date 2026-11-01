@@ -28,5 +28,16 @@ int bw_play_audio_out(float* dst128);
 int bw_play_band(int which, int index, float* out);
 int bw_play_png(const char* path);
 void bw_play_close(void);
+/* 0 skips glReadPixels. The default is on, so grabs and tests keep pixels.
+   The live window turns it off and samples the color texture instead. */
+void bw_play_set_readback(int on);
+/* Mouse in the item, pixels, y down. valid is 0 when no pointer has moved. */
+void bw_play_pointer(float x, float y, float item_w, float item_h, int valid);
+/* Last frame split, microseconds. Read is 0 when readback is off. */
+void bw_play_profile(int* sim_us, int* gl_us, int* read_us);
+/* Draw the color texture into the current GL context. 1 on success. */
+int bw_play_blit(void);
+/* 1 after a present-path frame exported its color texture. */
+int bw_play_exported(void);
 
 #endif

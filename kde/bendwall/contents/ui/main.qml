@@ -105,7 +105,7 @@ Item {
     }
 
     Rectangle {
-        visible: root.wallpaperIsWeb() && !frame.visible
+        visible: frame.statsText.length > 0
         anchors.left: parent.left
         anchors.top: parent.top
         anchors.margins: 8

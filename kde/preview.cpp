@@ -25,6 +25,8 @@
 #include <QVariant>
 #include <QVector>
 
+#include <cstring>
+
 #ifdef BENDWALL_HAS_WEBENGINE
 #include <QtWebEngineQuick/qtwebenginequickglobal.h>
 #endif
@@ -126,6 +128,23 @@ static int frameMs(const QString& line) {
     return ok && ms > 0 ? ms : 1000;
 }
 
+/* One frame of a 24fps film is often the same pixel at the center.
+   A second of playback (or one whole frame, when the frame is longer)
+   is enough for the synthetic 1fps clip and for a real shot. */
+static int spacedMs(int frameMs) {
+    return frameMs > 1000 ? frameMs : 1000;
+}
+
+static int pictureDiff(const QImage& a, const QImage& b) {
+    if (a.isNull() || b.isNull()) return 1;
+    if (a.width() != b.width() || a.height() != b.height()) return 1;
+    for (int y = 0; y < a.height(); ++y) {
+        if (std::memcmp(a.constScanLine(y), b.constScanLine(y), static_cast<size_t>(a.width()) * 4) != 0)
+            return 1;
+    }
+    return 0;
+}
+
 static int playFrames(const QString& dir, int bench) {
     Engine eng;
     eng.setAudio(constantAudio());
@@ -136,14 +155,15 @@ static int playFrames(const QString& dir, int bench) {
     eng.step(0);
     const QImage a = eng.image();
     if (a.isNull()) return 1;
-    const int ms = frameMs(eng.line());
-    if (!eng.step(ms)) return 1;
+    const int span = spacedMs(frameMs(eng.line()));
+    if (!eng.step(span)) return 1;
     const QImage b = eng.image();
     const QRgb p0 = a.pixel(a.width() / 2, a.height() / 2);
     const QRgb p1 = b.pixel(b.width() / 2, b.height() / 2);
-    const int diff = qRed(p0) != qRed(p1) || qGreen(p0) != qGreen(p1) || qBlue(p0) != qBlue(p1);
+    const int diff = pictureDiff(a, b);
     std::printf("FRAME 0 %d %d %d %d\n", qRed(p0), qGreen(p0), qBlue(p0), qAlpha(p0));
     std::printf("FRAME 1 %d %d %d %d\n", qRed(p1), qGreen(p1), qBlue(p1), qAlpha(p1));
+    std::printf("SPAN %d\n", span);
     std::printf("DIFF %d\n", diff);
     eng.close();
     /* Throughput at a desktop-sized target. The color check above stays small. */

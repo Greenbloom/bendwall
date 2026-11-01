@@ -29,6 +29,8 @@ export BENDWALL_NATIVE="$PWD/host/libbendwall.so"
 ./build/kde/bendwall-preview --play-frames "$PWD/fixtures/play/video" 8 > build/preview-play.out
 python3 tools/check_preview_play.py build/preview-play.out
 python3 tools/mktexscene.py
+./build/kde/bendwall-preview --play-frames "$PWD/fixtures/play/gifscene" 4 > build/preview-gif.out
+python3 tools/check_preview_play.py build/preview-gif.out
 QT_QPA_PLATFORM=offscreen timeout 20 ./build/kde/bendwall-preview --watch-check "$PWD/fixtures/play/web" > build/watch-web.out
 python3 tools/check_watch.py build/watch-web.out web
 QT_QPA_PLATFORM=offscreen timeout 20 ./build/kde/bendwall-preview --watch-check "$PWD/fixtures/play/texscene" > build/watch-scene.out

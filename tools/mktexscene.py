@@ -16,6 +16,8 @@ PLAY = os.path.join(ROOT, "fixtures", "play")
 CYAN = bytes([0, 255, 255, 255])
 MAGENTA = bytes([255, 0, 255, 255])
 RED = bytes([255, 0, 0, 255])
+GREEN = bytes([0, 255, 0, 255])
+BLUE = bytes([0, 40, 255, 255])
 YELLOW = bytes([255, 255, 0, 255])
 
 # DXT5 4x4, alpha index 0, color 0x07E0 (exact green), color index 0.
@@ -138,6 +140,117 @@ def project(dirpath):
                '{ "type": "scene", "file": "scene.json" }\n')
 
 
+def write_quad(dirpath, image_json):
+    """Half cyan, half magenta, placed like the texscene quad."""
+    project(dirpath)
+    write_text(os.path.join(dirpath, "scene.json"), """{
+  "general": {"orthogonalprojection": {"width": 160, "height": 90}},
+  "objects": [{
+    "name": "bg",
+    "image": %s,
+    "origin": "40 22.5 0",
+    "size": "80 45",
+    "alpha": 1
+  }]
+}
+""" % image_json)
+    write_text(os.path.join(dirpath, "models", "bg.json"),
+               '{"material": "materials/bg.json", "fullscreen": false, "width": 80, "height": 45}\n')
+    write_text(os.path.join(dirpath, "materials", "bg.json"),
+               '{"passes": [{"textures": ["sky"]}]}\n')
+    write(os.path.join(dirpath, "materials", "sky.tex"), sky_tex())
+
+
+def write_mat(dirpath):
+    """The image object is a material reference, not a model path."""
+    project(dirpath)
+    write_text(os.path.join(dirpath, "scene.json"), """{
+  "general": {"orthogonalprojection": {"width": 160, "height": 90}},
+  "objects": [{
+    "name": "bg",
+    "image": {"material": "bg"},
+    "origin": "40 22.5 0",
+    "size": "80 45",
+    "alpha": 1
+  }]
+}
+""")
+    write_text(os.path.join(dirpath, "materials", "bg.json"),
+               '{"passes": [{"textures": ["sky"]}]}\n')
+    write(os.path.join(dirpath, "materials", "sky.tex"), sky_tex())
+
+
+def write_mixed(dirpath):
+    """One missing image and one decoded image. The probe must say partial."""
+    project(dirpath)
+    write_text(os.path.join(dirpath, "scene.json"), """{
+  "general": {"orthogonalprojection": {"width": 160, "height": 90}},
+  "objects": [
+    {"name": "gone", "image": {"file": "models/missing-face.json"}},
+    {"name": "bg", "image": "models/bg.json", "origin": "80 45 0", "size": "160 90", "alpha": 1}
+  ]
+}
+""")
+    write_text(os.path.join(dirpath, "models", "bg.json"),
+               '{"material": "materials/bg.json", "fullscreen": true, "width": 160, "height": 90}\n')
+    write_text(os.path.join(dirpath, "materials", "bg.json"),
+               '{"passes": [{"textures": ["sky"]}]}\n')
+    write(os.path.join(dirpath, "materials", "sky.tex"), sky_tex())
+
+
+def gif_tex():
+    """Two TEXB images and a TEXS0001 sheet. Frame 0 is red, frame 1 is green."""
+    red = RED * (8 * 8)
+    green = GREEN * (8 * 8)
+    return tex(
+        fmt=0, flags=0x4, tw=8, th=8, iw=8, ih=8, bv=2,
+        images=[
+            [mip(8, 8, lz4_literals(red), lz4=1, raw=len(red))],
+            [mip(8, 8, lz4_literals(green), lz4=1, raw=len(green))],
+        ],
+        sprites={
+            "sv": 1,
+            "frames": [
+                {"img": 0, "t": 0.5, "x": 0, "y": 0, "w": 8, "wy": 0, "hx": 0, "h": 8},
+                {"img": 1, "t": 2.0, "x": 0, "y": 0, "w": 8, "wy": 0, "hx": 0, "h": 8},
+            ],
+        },
+    )
+
+
+def gif_pkg():
+    scene = (
+        '{"general":{"orthogonalprojection":{"width":160,"height":90}},'
+        '"objects":[{"name":"bg","image":"models/bg.json","alpha":1}]}'
+    )
+    model = '{"material":"materials/bg.json","fullscreen":true,"width":160,"height":90}\n'
+    material = '{"passes":[{"textures":["background"]}]}\n'
+    return pkg([
+        ("gifscene.json", scene.encode("utf-8")),
+        ("models/bg.json", model.encode("utf-8")),
+        ("materials/bg.json", material.encode("utf-8")),
+        ("materials/background.tex", gif_tex()),
+    ], 9)
+
+
+def sheet_tex():
+    """One atlas, TEXS0003 float rects. Left is red, right is blue."""
+    rgba = (RED * 4 + BLUE * 4) * 4
+    return tex(
+        fmt=0, flags=0x4, tw=8, th=4, iw=8, ih=4, bv=2,
+        images=[[mip(8, 4, rgba)]],
+        sprites={
+            "sv": 3,
+            "sw": 8,
+            "sh": 4,
+            "frames": [
+                {"img": 0, "t": 0.5, "x": 0, "y": 0, "w": 4, "wy": 0, "hx": 0, "h": 4},
+                {"img": 0, "t": 2.0, "x": 4, "y": 0, "w": 4, "wy": 0, "hx": 0, "h": 4},
+            ],
+        },
+    )
+
+
 def main():
     write(os.path.join(PLAY, "texscene", "scene.pkg"), scene_pkg())
     write(os.path.join(PLAY, "texscene", "decoy.png"), png_rgba(8, 8, YELLOW * 64))
@@ -233,6 +346,20 @@ def main():
         "bad", b"TEXV0005\x00this is not a texture", ver=9,
     ))
     project(os.path.join(PLAY, "badtex"))
+
+    # image is an object whose file is the model, not the word "image".
+    write_quad(os.path.join(PLAY, "objimg"), '{"file": "models/bg.json"}')
+    # image is a material reference, then textures[0].
+    write_mat(os.path.join(PLAY, "matref"))
+    write_text(os.path.join(PLAY, "objmiss", "project.json"),
+               '{ "type": "scene", "file": "scene.json", "title": "Missing face" }\n')
+    write_text(os.path.join(PLAY, "objmiss", "scene.json"),
+               '{ "objects": [{ "name": "bg", "image": {"file": "models/missing-face.json"} }] }\n')
+    write_mixed(os.path.join(PLAY, "mixed"))
+    write(os.path.join(PLAY, "gifscene", "gifscene.pkg"), gif_pkg())
+    write_text(os.path.join(PLAY, "gifscene", "project.json"),
+               '{ "type": "scene", "file": "gifscene.json", "title": "Hack page" }\n')
+    write(os.path.join(PLAY, "sheet.tex"), sheet_tex())
     print("mktexscene ok")
 
 

@@ -83,6 +83,11 @@ typedef struct Live {
   int tex;
   float cx, cy, lw, lh, deg, alpha;
   int full;
+  BwSheet* sheets;
+  int nsheets;
+  BwFrame* frames;
+  int nframes;
+  int frame_i;
 } Live;
 static Live g_live[MAXL];
 static int g_nlive;
@@ -431,6 +436,43 @@ static void upload_picture(void) {
     g_tex = bw_gl_image(g_tex, g_vid.w, g_vid.h, g_vid.rgba, g_vid.w * g_vid.h * 4);
 }
 
+static void free_live_anim(Live* L) {
+  int s;
+  if (!L) return;
+  if (L->sheets) {
+    for (s = 0; s < L->nsheets; s++) free(L->sheets[s].rgba);
+    free(L->sheets);
+  }
+  free(L->frames);
+  L->sheets = NULL;
+  L->frames = NULL;
+  L->nsheets = 0;
+  L->nframes = 0;
+  L->frame_i = 0;
+}
+
+/* TEXS frames follow g_Time. The still upload is frame 0, so the first
+   draw can skip until the clock moves onto another frame. */
+static void sync_sprites(void) {
+  int i;
+  for (i = 0; i < g_nlive; i++) {
+    Live* L = &g_live[i];
+    int fi;
+    uint8_t* px = NULL;
+    int w = 0, h = 0, tex;
+    if (L->nframes < 2 || !L->sheets || !L->frames) continue;
+    fi = bw_frame_index(L->frames, L->nframes, g_time_ms);
+    if (fi == L->frame_i && L->tex > 0) continue;
+    if (!bw_tex_crop(L->sheets, L->nsheets, &L->frames[fi], &px, &w, &h) || !px) continue;
+    tex = bw_gl_image(L->tex, w, h, px, w * h * 4);
+    free(px);
+    if (tex > 0) {
+      L->tex = tex;
+      L->frame_i = fi;
+    }
+  }
+}
+
 static int draw(void) {
   int bar_h, band_w, i, scale, nread;
   const float* bands[6];
@@ -445,6 +487,7 @@ static int draw(void) {
   if (!g_copy_prog) g_copy_prog = bw_gl_prog(k_vs, k_copy);
   if (!ensure_fx() || !g_copy_prog) { bw_gl_end(); return 0; }
   upload_picture();
+  sync_sprites();
   if (!bw_gl_bind(1) || !bw_gl_clear()) { bw_gl_end(); return 0; }
   if (g_has_video && g_tex > 0) {
     draw_quad(g_copy_prog, g_tex, 0, 0, g_w, g_h, 1.f);
@@ -557,6 +600,7 @@ void bw_play_close(void) {
         GLuint t = (GLuint)g_live[i].tex;
         glDeleteTextures(1, &t);
       }
+      free_live_anim(&g_live[i]);
     }
     if (g_copy_prog > 0) glDeleteProgram((GLuint)g_copy_prog);
     if (g_fx_prog > 0) glDeleteProgram((GLuint)g_fx_prog);
@@ -629,6 +673,21 @@ int bw_play_open(const char* dir, int w, int h) {
       g_live[g_nlive].deg = L->deg;
       g_live[g_nlive].alpha = L->alpha;
       g_live[g_nlive].full = L->full;
+      g_live[g_nlive].sheets = NULL;
+      g_live[g_nlive].frames = NULL;
+      g_live[g_nlive].nsheets = 0;
+      g_live[g_nlive].nframes = 0;
+      g_live[g_nlive].frame_i = 0;
+      if (L->nframes >= 2 && L->sheets && L->frames) {
+        g_live[g_nlive].sheets = L->sheets;
+        g_live[g_nlive].nsheets = L->nsheets;
+        g_live[g_nlive].frames = L->frames;
+        g_live[g_nlive].nframes = L->nframes;
+        L->sheets = NULL;
+        L->frames = NULL;
+        L->nsheets = 0;
+        L->nframes = 0;
+      }
       g_nlive++;
     }
     prepare_text();
@@ -651,9 +710,12 @@ int bw_play_step(int dt_ms) {
   g_time_ms += dt_ms;
   if (g_vid.open) {
     g_vid.acc += dt_ms;
-    while (g_vid.acc >= g_vid.frame_ms && guard++ < 8) {
+    /* A one-second step on a 30fps clip is ~30 frames. The old cap of 8
+       left the picture almost where it started, so --play-frames compared
+       two copies of the same image. */
+    while (g_vid.frame_ms > 0 && g_vid.acc >= g_vid.frame_ms && guard++ < 180) {
       g_vid.acc -= g_vid.frame_ms;
-      vid_next(1);
+      if (!vid_next(1)) break;
     }
   }
   spectrum_update();

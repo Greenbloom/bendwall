@@ -1,11 +1,14 @@
 /* Scene picture resolution. Top-level project.json keys, then
-   object → model json → material json → texture. .tex is TEXV/TEXI/TEXB
-   (REA §4): LZ4 block, raw rgba/rg/r, DXT, or an embedded PNG/JPEG.
-   The same entry point feeds the player and the probe. */
+   object → model json → material json → texture. An image value may be
+   that path or an object carrying it (file / path / model / value) or a
+   material reference. .tex is TEXV/TEXI/TEXB (REA §4): LZ4 block, raw
+   rgba/rg/r, DXT, an embedded PNG/JPEG, and TEXS frames. The same entry
+   point feeds the player and the probe. */
 #include "plan.h"
 
 #include <ctype.h>
 #include <dirent.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,8 +16,10 @@
 #include <png.h>
 #include <setjmp.h>
 
-#define CAP_FILE (64 * 1024 * 1024)
-#define CAP_RAW (64 * 1024 * 1024)
+/* One 8192² RGBA atlas is 256MB. GIF sheets in the wild are that size,
+   and the compressed member can be large too. */
+#define CAP_FILE (256 * 1024 * 1024)
+#define CAP_RAW (8192 * 8192 * 4)
 #define MAX_LAYER 32
 
 static uint32_t ru32(const uint8_t* p) {
@@ -503,16 +508,366 @@ static int take_tag(const uint8_t* b, int n, int* i, char* out) {
 
 static int need(int i, int n, int k) { return i >= 0 && k >= 0 && i + k <= n; }
 
-int bw_tex_decode(const uint8_t* b, int n, uint8_t** rgba, int* w, int* h) {
-    char texv[12], texi[12], texb[12];
-    int i = 0, ver_i, bv, vol, fif = -1, fmt, flags, iw, ih, mw, mh;
-    uint32_t mip_count, image_count, lz4 = 0, raw = 0, sz;
+static float rf32(const uint8_t* p) {
+    float f;
+    uint32_t u = ru32(p);
+    memcpy(&f, &u, 4);
+    return f;
+}
+
+static void free_sheets(BwSheet* sheets, int n) {
+    int i;
+    if (!sheets) return;
+    for (i = 0; i < n; i++) free(sheets[i].rgba);
+    free(sheets);
+}
+
+int bw_frame_index(const BwFrame* frames, int nframes, int time_ms) {
+    double total = 0, acc = 0, t;
+    int i;
+    if (!frames || nframes <= 1) return 0;
+    for (i = 0; i < nframes; i++) {
+        double d = frames[i].dur;
+        if (d < 0.001) d = 0.001;
+        total += d;
+    }
+    if (total <= 0) return 0;
+    t = time_ms <= 0 ? 0.0 : (double)time_ms / 1000.0;
+    t = fmod(t, total);
+    if (t < 0) t += total;
+    for (i = 0; i < nframes; i++) {
+        double d = frames[i].dur;
+        if (d < 0.001) d = 0.001;
+        acc += d;
+        if (t < acc) return i;
+    }
+    return nframes - 1;
+}
+
+static void sample_px(const BwSheet* sh, int x, int y, uint8_t* d) {
+    if (x < 0 || y < 0 || x >= sh->w || y >= sh->h) {
+        d[0] = d[1] = d[2] = 0;
+        d[3] = 0;
+        return;
+    }
+    memcpy(d, sh->rgba + ((size_t)y * (size_t)sh->w + (size_t)x) * 4, 4);
+}
+
+int bw_tex_crop(const BwSheet* sheets, int nsheets, const BwFrame* fr, uint8_t** rgba, int* w, int* h) {
+    const BwSheet* sh;
+    float x, y, bw, wy, hx, hh;
+    int axis, iw, ih, row, col;
+    uint8_t* out;
+    if (!sheets || !fr || !rgba || fr->sheet < 0 || fr->sheet >= nsheets) return 0;
+    sh = &sheets[fr->sheet];
+    if (!sh->rgba || sh->w < 1 || sh->h < 1) return 0;
+    x = fr->x;
+    y = fr->y;
+    bw = fr->w;
+    wy = fr->wy;
+    hx = fr->hx;
+    hh = fr->h;
+    axis = fabsf(wy) <= 0.51f && fabsf(hx) <= 0.51f;
+    if (axis) {
+        if (bw < 0) {
+            x += bw;
+            bw = -bw;
+        }
+        if (hh < 0) {
+            y += hh;
+            hh = -hh;
+        }
+        iw = (int)floorf(bw + 0.5f);
+        ih = (int)floorf(hh + 0.5f);
+    } else {
+        iw = (int)(sqrtf(bw * bw + wy * wy) + 0.5f);
+        ih = (int)(sqrtf(hx * hx + hh * hh) + 0.5f);
+    }
+    if (iw < 1) iw = 1;
+    if (ih < 1) ih = 1;
+    if (iw > 8192) iw = 8192;
+    if (ih > 8192) ih = 8192;
+    out = (uint8_t*)malloc((size_t)iw * (size_t)ih * 4);
+    if (!out) return 0;
+    if (axis) {
+        int x0 = (int)floorf(x);
+        int y0 = (int)floorf(y);
+        for (row = 0; row < ih; row++) {
+            for (col = 0; col < iw; col++)
+                sample_px(sh, x0 + col, y0 + row, out + ((size_t)row * (size_t)iw + (size_t)col) * 4);
+        }
+    } else {
+        for (row = 0; row < ih; row++) {
+            for (col = 0; col < iw; col++) {
+                float u = x + ((float)col + 0.5f) / (float)iw * bw + ((float)row + 0.5f) / (float)ih * hx;
+                float v = y + ((float)col + 0.5f) / (float)iw * wy + ((float)row + 0.5f) / (float)ih * hh;
+                sample_px(sh, (int)floorf(u), (int)floorf(v), out + ((size_t)row * (size_t)iw + (size_t)col) * 4);
+            }
+        }
+    }
+    *rgba = out;
+    *w = iw;
+    *h = ih;
+    return 1;
+}
+
+static uint8_t* pixels_from_mip(int fmt, int fif, const uint8_t* data, uint32_t sz, int mw, int mh, int* tw, int* th) {
+    uint8_t* full = NULL;
+    if (fif != -1) {
+        int ok = decode_png_mem(data, (int)sz, &full, tw, th);
+        if (!ok) ok = decode_jpeg_mem(data, (int)sz, &full, tw, th);
+        return ok ? full : NULL;
+    }
+    if (fmt == 0) {
+        if (sz < (uint32_t)mw * (uint32_t)mh * 4) return NULL;
+        full = (uint8_t*)malloc((size_t)mw * (size_t)mh * 4);
+        if (!full) return NULL;
+        memcpy(full, data, (size_t)mw * (size_t)mh * 4);
+        *tw = mw;
+        *th = mh;
+    } else if (fmt == 1) {
+        int x, y;
+        if (sz < (uint32_t)mw * (uint32_t)mh * 3) return NULL;
+        full = (uint8_t*)malloc((size_t)mw * (size_t)mh * 4);
+        if (!full) return NULL;
+        for (y = 0; y < mh; y++) {
+            for (x = 0; x < mw; x++) {
+                const uint8_t* s = data + ((size_t)y * (size_t)mw + (size_t)x) * 3;
+                uint8_t* d = full + ((size_t)y * (size_t)mw + (size_t)x) * 4;
+                d[0] = s[0];
+                d[1] = s[1];
+                d[2] = s[2];
+                d[3] = 255;
+            }
+        }
+        *tw = mw;
+        *th = mh;
+    } else if (fmt == 8) {
+        int x, y;
+        if (sz < (uint32_t)mw * (uint32_t)mh * 2) return NULL;
+        full = (uint8_t*)malloc((size_t)mw * (size_t)mh * 4);
+        if (!full) return NULL;
+        for (y = 0; y < mh; y++) {
+            for (x = 0; x < mw; x++) {
+                const uint8_t* s = data + ((size_t)y * (size_t)mw + (size_t)x) * 2;
+                uint8_t* d = full + ((size_t)y * (size_t)mw + (size_t)x) * 4;
+                d[0] = d[1] = d[2] = s[0];
+                d[3] = s[1];
+            }
+        }
+        *tw = mw;
+        *th = mh;
+    } else if (fmt == 9) {
+        int x, y;
+        if (sz < (uint32_t)mw * (uint32_t)mh) return NULL;
+        full = (uint8_t*)malloc((size_t)mw * (size_t)mh * 4);
+        if (!full) return NULL;
+        for (y = 0; y < mh; y++) {
+            for (x = 0; x < mw; x++) {
+                uint8_t* d = full + ((size_t)y * (size_t)mw + (size_t)x) * 4;
+                d[0] = d[1] = d[2] = data[(size_t)y * (size_t)mw + (size_t)x];
+                d[3] = 255;
+            }
+        }
+        *tw = mw;
+        *th = mh;
+    } else if (fmt == 7 || fmt == 6 || fmt == 4) {
+        int kind = fmt == 7 ? 1 : (fmt == 6 ? 3 : 5);
+        if (!dxt_decode(data, (int)sz, mw, mh, kind, &full)) return NULL;
+        *tw = mw;
+        *th = mh;
+    } else {
+        return NULL;
+    }
+    return full;
+}
+
+static int crop_to_image(uint8_t** full, int* tw, int* th, int iw, int ih) {
+    uint8_t* crop;
+    int y;
+    if (!(iw > 0 && ih > 0 && (iw < *tw || ih < *th) && iw <= *tw && ih <= *th)) return 1;
+    crop = (uint8_t*)malloc((size_t)iw * (size_t)ih * 4);
+    if (!crop) return 0;
+    for (y = 0; y < ih; y++)
+        memcpy(crop + (size_t)y * (size_t)iw * 4, *full + (size_t)y * (size_t)(*tw) * 4, (size_t)iw * 4);
+    free(*full);
+    *full = crop;
+    *tw = iw;
+    *th = ih;
+    return 1;
+}
+
+static int skip_mip_body(const uint8_t* b, int n, int* i, int bv, int vol) {
+    uint32_t sz;
+    if (!need(*i, n, 8)) return 0;
+    *i += 8;
+    if (vol) {
+        if (!need(*i, n, 4)) return 0;
+        *i += 4;
+    }
+    if (bv >= 2) {
+        if (!need(*i, n, 8)) return 0;
+        *i += 8;
+    }
+    if (!need(*i, n, 4)) return 0;
+    sz = ru32(b + *i);
+    *i += 4;
+    if (sz > (uint32_t)CAP_FILE || !need(*i, n, (int)sz)) return 0;
+    *i += (int)sz;
+    return 1;
+}
+
+/* Decode mip 0 and leave *i on the following mip, or past this image. */
+static int read_image(const uint8_t* b, int n, int* i, int bv, int vol, int fif, int fmt, int iw, int ih, BwSheet* sheet) {
+    uint32_t mip_count, lz4 = 0, raw = 0, sz;
+    int mw, mh, tw = 0, th = 0, extra;
     const uint8_t* data;
     uint8_t* rawb = NULL;
-    uint8_t* full = NULL;
-    int tw, th;
+    uint8_t* full;
+    memset(sheet, 0, sizeof *sheet);
+    if (!need(*i, n, 4)) return 0;
+    mip_count = ru32(b + *i);
+    *i += 4;
+    if (mip_count < 1 || mip_count > 16) return 0;
+    if (!need(*i, n, 8)) return 0;
+    mw = (int)ru32(b + *i);
+    mh = (int)ru32(b + *i + 4);
+    *i += 8;
+    if (vol) {
+        if (!need(*i, n, 4)) return 0;
+        *i += 4;
+    }
+    if (bv >= 2) {
+        if (!need(*i, n, 8)) return 0;
+        lz4 = ru32(b + *i);
+        raw = ru32(b + *i + 4);
+        *i += 8;
+    }
+    if (!need(*i, n, 4)) return 0;
+    sz = ru32(b + *i);
+    *i += 4;
+    if (!need(*i, n, (int)sz) || mw < 1 || mh < 1 || mw > 8192 || mh > 8192) return 0;
+    data = b + *i;
+    *i += (int)sz;
+    if (lz4 & 1u) {
+        if (raw < 1 || raw > (uint32_t)CAP_RAW) return 0;
+        rawb = (uint8_t*)malloc(raw);
+        if (!rawb || !lz4_block(data, (int)sz, rawb, (int)raw)) {
+            free(rawb);
+            return 0;
+        }
+        data = rawb;
+        sz = raw;
+    }
+    full = pixels_from_mip(fmt, fif, data, sz, mw, mh, &tw, &th);
+    free(rawb);
+    if (!full) return 0;
+    if (fif == -1 && !crop_to_image(&full, &tw, &th, iw, ih)) {
+        free(full);
+        return 0;
+    }
+    for (extra = 1; extra < (int)mip_count; extra++) {
+        if (!skip_mip_body(b, n, i, bv, vol)) {
+            free(full);
+            return 0;
+        }
+    }
+    sheet->rgba = full;
+    sheet->w = tw;
+    sheet->h = th;
+    return 1;
+}
+
+static int parse_texs(const uint8_t* b, int n, int* i, const BwSheet* sheets, int nsheets, BwFrame** out, int* nout) {
+    char tag[12];
+    int sv, count, k, kept;
+    int sheet_w = 0, sheet_h = 0;
+    BwFrame* fr;
+    *out = NULL;
+    *nout = 0;
+    if (*i + 9 > n || memcmp(b + *i, "TEXS", 4) != 0 || b[*i + 8] != 0) return 1;
+    if (!take_tag(b, n, i, tag)) return 0;
+    sv = atoi(tag + 4);
+    if (!need(*i, n, 4)) return 0;
+    count = (int)ru32(b + *i);
+    *i += 4;
+    if (count < 1 || count > 4096) return 0;
+    if (sv >= 3) {
+        if (!need(*i, n, 8)) return 0;
+        sheet_w = (int)ru32(b + *i);
+        sheet_h = (int)ru32(b + *i + 4);
+        *i += 8;
+    }
+    fr = (BwFrame*)calloc((size_t)count, sizeof(BwFrame));
+    if (!fr) return 0;
+    kept = 0;
+    for (k = 0; k < count; k++) {
+        BwFrame one;
+        float sx, sy;
+        int img;
+        memset(&one, 0, sizeof one);
+        if (!need(*i, n, 8 + 24)) {
+            free(fr);
+            return 0;
+        }
+        img = (int)ru32(b + *i);
+        one.dur = rf32(b + *i + 4);
+        *i += 8;
+        if (sv == 1) {
+            one.x = (float)ru32(b + *i);
+            one.y = (float)ru32(b + *i + 4);
+            one.w = (float)ru32(b + *i + 8);
+            one.wy = (float)ru32(b + *i + 12);
+            one.hx = (float)ru32(b + *i + 16);
+            one.h = (float)ru32(b + *i + 20);
+        } else {
+            one.x = rf32(b + *i);
+            one.y = rf32(b + *i + 4);
+            one.w = rf32(b + *i + 8);
+            one.wy = rf32(b + *i + 12);
+            one.hx = rf32(b + *i + 16);
+            one.h = rf32(b + *i + 20);
+        }
+        *i += 24;
+        if (img < 0 || img >= nsheets || !sheets[img].rgba) continue;
+        one.sheet = img;
+        sx = 1.f;
+        sy = 1.f;
+        if (sv >= 3 && sheet_w > 0 && sheet_h > 0) {
+            sx = (float)sheets[img].w / (float)sheet_w;
+            sy = (float)sheets[img].h / (float)sheet_h;
+        }
+        one.x *= sx;
+        one.y *= sy;
+        one.w *= sx;
+        one.wy *= sy;
+        one.hx *= sx;
+        one.h *= sy;
+        fr[kept++] = one;
+    }
+    if (kept < 1) {
+        free(fr);
+        return 1;
+    }
+    *out = fr;
+    *nout = kept;
+    return 1;
+}
+
+static int tex_load(const uint8_t* b, int n, int time_ms, int keep, uint8_t** rgba, int* w, int* h, BwSheet** sheets_out, int* nsheets_out, BwFrame** frames_out, int* nframes_out) {
+    char texv[12], texi[12], texb[12];
+    int i = 0, ver_i, bv, vol, fif = -1, fmt, flags, iw, ih, img;
+    uint32_t image_count;
+    BwSheet* sheets = NULL;
+    BwFrame* frames = NULL;
+    int nframes = 0;
+    int fi;
+    if (rgba) *rgba = NULL;
+    if (sheets_out) *sheets_out = NULL;
+    if (nsheets_out) *nsheets_out = 0;
+    if (frames_out) *frames_out = NULL;
+    if (nframes_out) *nframes_out = 0;
     if (!b || n < 32 || !rgba) return 0;
-    *rgba = NULL;
     if (!take_tag(b, n, &i, texv) || strncmp(texv, "TEXV", 4) != 0) return 0;
     if (!take_tag(b, n, &i, texi) || strncmp(texi, "TEXI", 4) != 0) return 0;
     ver_i = atoi(texi + 4);
@@ -537,7 +892,7 @@ int bw_tex_decode(const uint8_t* b, int n, uint8_t** rgba, int* w, int* h) {
     if (!need(i, n, 4)) return 0;
     image_count = ru32(b + i);
     i += 4;
-    if (image_count < 1 || image_count > 64) return 0;
+    if (image_count < 1 || image_count > 32) return 0;
     if (bv >= 3) {
         if (!need(i, n, 4)) return 0;
         fif = (int)ri32(b + i);
@@ -550,157 +905,51 @@ int bw_tex_decode(const uint8_t* b, int n, uint8_t** rgba, int* w, int* h) {
         i += 4;
         if (cond != 0) return 0;
     }
-    if (!need(i, n, 4)) return 0;
-    mip_count = ru32(b + i);
-    i += 4;
-    if (mip_count < 1 || mip_count > 16) return 0;
-    if (!need(i, n, 8)) return 0;
-    mw = (int)ru32(b + i);
-    mh = (int)ru32(b + i + 4);
-    i += 8;
-    if (vol) {
-        if (!need(i, n, 4)) return 0;
-        i += 4;
+    sheets = (BwSheet*)calloc(image_count, sizeof(BwSheet));
+    if (!sheets) return 0;
+    for (img = 0; img < (int)image_count; img++) {
+        if (!read_image(b, n, &i, bv, vol, fif, fmt, iw, ih, &sheets[img])) {
+            free_sheets(sheets, (int)image_count);
+            return 0;
+        }
     }
-    if (bv >= 2) {
-        if (!need(i, n, 8)) return 0;
-        lz4 = ru32(b + i);
-        raw = ru32(b + i + 4);
-        i += 8;
-    }
-    if (!need(i, n, 4)) return 0;
-    sz = ru32(b + i);
-    i += 4;
-    if (!need(i, n, (int)sz) || mw < 1 || mh < 1 || mw > 8192 || mh > 8192) return 0;
-    data = b + i;
-    if (lz4 & 1u) {
-        if (raw < 1 || raw > CAP_RAW) return 0;
-        rawb = (uint8_t*)malloc(raw);
-        if (!rawb || !lz4_block(data, (int)sz, rawb, (int)raw)) {
-            free(rawb);
-            return 0;
-        }
-        data = rawb;
-        sz = raw;
-    }
-    if (fif != -1) {
-        int ok = decode_png_mem(data, (int)sz, &full, &tw, &th);
-        if (!ok) ok = decode_jpeg_mem(data, (int)sz, &full, &tw, &th);
-        free(rawb);
-        if (!ok) return 0;
-        *rgba = full;
-        *w = tw;
-        *h = th;
-        return 1;
-    }
-    if (fmt == 0) {
-        if (sz < (uint32_t)mw * (uint32_t)mh * 4) {
-            free(rawb);
-            return 0;
-        }
-        full = (uint8_t*)malloc((size_t)mw * (size_t)mh * 4);
-        if (!full) {
-            free(rawb);
-            return 0;
-        }
-        memcpy(full, data, (size_t)mw * (size_t)mh * 4);
-        tw = mw;
-        th = mh;
-    } else if (fmt == 1) {
-        int x, y;
-        if (sz < (uint32_t)mw * (uint32_t)mh * 3) {
-            free(rawb);
-            return 0;
-        }
-        full = (uint8_t*)malloc((size_t)mw * (size_t)mh * 4);
-        if (!full) {
-            free(rawb);
-            return 0;
-        }
-        for (y = 0; y < mh; y++) {
-            for (x = 0; x < mw; x++) {
-                const uint8_t* s = data + ((size_t)y * (size_t)mw + (size_t)x) * 3;
-                uint8_t* d = full + ((size_t)y * (size_t)mw + (size_t)x) * 4;
-                d[0] = s[0];
-                d[1] = s[1];
-                d[2] = s[2];
-                d[3] = 255;
-            }
-        }
-        tw = mw;
-        th = mh;
-    } else if (fmt == 8) {
-        int x, y;
-        if (sz < (uint32_t)mw * (uint32_t)mh * 2) {
-            free(rawb);
-            return 0;
-        }
-        full = (uint8_t*)malloc((size_t)mw * (size_t)mh * 4);
-        if (!full) {
-            free(rawb);
-            return 0;
-        }
-        for (y = 0; y < mh; y++) {
-            for (x = 0; x < mw; x++) {
-                const uint8_t* s = data + ((size_t)y * (size_t)mw + (size_t)x) * 2;
-                uint8_t* d = full + ((size_t)y * (size_t)mw + (size_t)x) * 4;
-                d[0] = d[1] = d[2] = s[0];
-                d[3] = s[1];
-            }
-        }
-        tw = mw;
-        th = mh;
-    } else if (fmt == 9) {
-        int x, y;
-        if (sz < (uint32_t)mw * (uint32_t)mh) {
-            free(rawb);
-            return 0;
-        }
-        full = (uint8_t*)malloc((size_t)mw * (size_t)mh * 4);
-        if (!full) {
-            free(rawb);
-            return 0;
-        }
-        for (y = 0; y < mh; y++) {
-            for (x = 0; x < mw; x++) {
-                uint8_t* d = full + ((size_t)y * (size_t)mw + (size_t)x) * 4;
-                d[0] = d[1] = d[2] = data[(size_t)y * (size_t)mw + (size_t)x];
-                d[3] = 255;
-            }
-        }
-        tw = mw;
-        th = mh;
-    } else if (fmt == 7 || fmt == 6 || fmt == 4) {
-        int kind = fmt == 7 ? 1 : (fmt == 6 ? 3 : 5);
-        if (!dxt_decode(data, (int)sz, mw, mh, kind, &full)) {
-            free(rawb);
-            return 0;
-        }
-        tw = mw;
-        th = mh;
-    } else {
-        free(rawb);
+    if (!parse_texs(b, n, &i, sheets, (int)image_count, &frames, &nframes)) {
+        free(frames);
+        free_sheets(sheets, (int)image_count);
         return 0;
     }
-    free(rawb);
-    if (iw > 0 && ih > 0 && (iw < tw || ih < th) && iw <= tw && ih <= th) {
-        uint8_t* crop = (uint8_t*)malloc((size_t)iw * (size_t)ih * 4);
-        int y;
-        if (!crop) {
-            free(full);
+    if (nframes >= 1) {
+        fi = bw_frame_index(frames, nframes, time_ms);
+        if (!bw_tex_crop(sheets, (int)image_count, &frames[fi], rgba, w, h)) {
+            free(frames);
+            free_sheets(sheets, (int)image_count);
             return 0;
         }
-        for (y = 0; y < ih; y++)
-            memcpy(crop + (size_t)y * (size_t)iw * 4, full + (size_t)y * (size_t)tw * 4, (size_t)iw * 4);
-        free(full);
-        full = crop;
-        tw = iw;
-        th = ih;
+        if (keep && nframes >= 2 && sheets_out && frames_out) {
+            *sheets_out = sheets;
+            if (nsheets_out) *nsheets_out = (int)image_count;
+            *frames_out = frames;
+            if (nframes_out) *nframes_out = nframes;
+            return 1;
+        }
+        free(frames);
+        free_sheets(sheets, (int)image_count);
+        return 1;
     }
-    *rgba = full;
-    *w = tw;
-    *h = th;
-    return full != NULL;
+    *rgba = sheets[0].rgba;
+    *w = sheets[0].w;
+    *h = sheets[0].h;
+    sheets[0].rgba = NULL;
+    free_sheets(sheets, (int)image_count);
+    return *rgba != NULL;
+}
+
+int bw_tex_decode(const uint8_t* b, int n, uint8_t** rgba, int* w, int* h) {
+    return tex_load(b, n, 0, 0, rgba, w, h, NULL, NULL, NULL, NULL);
+}
+
+int bw_tex_decode_time(const uint8_t* b, int n, int time_ms, uint8_t** rgba, int* w, int* h) {
+    return tex_load(b, n, time_ms, 0, rgba, w, h, NULL, NULL, NULL, NULL);
 }
 
 typedef struct {
@@ -1005,11 +1254,30 @@ static void push_missing(BwPlan* plan, const char* what, int decode_fail, float 
     push_layer(plan, L);
 }
 
-static int decode_bytes(const uint8_t* b, int n, uint8_t** rgba, int* w, int* h) {
+typedef struct PxGot {
+    uint8_t* rgba;
+    int w, h;
+    BwSheet* sheets;
+    int nsheets;
+    BwFrame* frames;
+    int nframes;
+} PxGot;
+
+static void clear_got(PxGot* g) {
+    if (!g) return;
+    free(g->rgba);
+    free_sheets(g->sheets, g->nsheets);
+    free(g->frames);
+    memset(g, 0, sizeof *g);
+}
+
+static int decode_bytes(const uint8_t* b, int n, PxGot* g) {
+    memset(g, 0, sizeof *g);
     if (!b || n < 4) return 0;
-    if (n >= 8 && !memcmp(b, "TEXV", 4)) return bw_tex_decode(b, n, rgba, w, h);
-    if (b[0] == 0x89 && b[1] == 'P') return decode_png_mem(b, n, rgba, w, h);
-    if (b[0] == 0xFF && b[1] == 0xD8) return decode_jpeg_mem(b, n, rgba, w, h);
+    if (n >= 8 && !memcmp(b, "TEXV", 4))
+        return tex_load(b, n, 0, 1, &g->rgba, &g->w, &g->h, &g->sheets, &g->nsheets, &g->frames, &g->nframes);
+    if (b[0] == 0x89 && b[1] == 'P') return decode_png_mem(b, n, &g->rgba, &g->w, &g->h);
+    if (b[0] == 0xFF && b[1] == 0xD8) return decode_jpeg_mem(b, n, &g->rgba, &g->w, &g->h);
     return 0;
 }
 
@@ -1117,25 +1385,30 @@ static void copy_cap(char* dst, int cap, const char* src) {
     dst[i] = 0;
 }
 
-static int try_rel(const char* dir, const char* assets, const char* rel, uint8_t** rgba, int* w, int* h) {
+static int try_rel(const char* dir, const char* assets, const char* rel, PxGot* g) {
     uint8_t* b = NULL;
     int n = 0, ok;
     const char* ext = raster_ext(rel) ? "" : ".tex";
     if (!read_rel(dir, assets, rel, ext, &b, &n)) return 0;
-    ok = decode_bytes(b, n, rgba, w, h);
+    ok = decode_bytes(b, n, g);
     free(b);
-    return ok ? 1 : -1;
+    if (!ok) {
+        clear_got(g);
+        return -1;
+    }
+    return 1;
 }
 
-static int load_pixels(const char* dir, const char* assets, const char* rel, uint8_t** rgba, int* w, int* h, char* why, int why_cap) {
+static int load_pixels(const char* dir, const char* assets, const char* rel, PxGot* g, char* why, int why_cap) {
     char cand[4][1100];
     char lower[1100];
     const char* base;
     int nc = 0, i, st, bad = 0;
     uint8_t* raw = NULL;
     int n = 0;
+    if (g) memset(g, 0, sizeof *g);
     if (why && why_cap > 0) why[0] = 0;
-    if (!rel || !rel[0]) return 0;
+    if (!rel || !rel[0] || !g) return 0;
     snprintf(cand[nc++], 1100, "%s", rel);
     lower_copy(rel, lower, sizeof lower);
     if (nc < 4 && strcmp(lower, rel) != 0) snprintf(cand[nc++], 1100, "%s", lower);
@@ -1147,7 +1420,7 @@ static int load_pixels(const char* dir, const char* assets, const char* rel, uin
     else if (nc < 4 && strncasecmp(rel, "materials/", 10) != 0)
         snprintf(cand[nc++], 1100, "materials/%s", base);
     for (i = 0; i < nc; i++) {
-        st = try_rel(dir, assets, cand[i], rgba, w, h);
+        st = try_rel(dir, assets, cand[i], g);
         if (st > 0) return 1;
         if (st < 0) {
             bad = 1;
@@ -1155,19 +1428,25 @@ static int load_pixels(const char* dir, const char* assets, const char* rel, uin
         }
     }
     if (!bad && dir && dir[0] && pkg_dir_mode(dir, base[0] ? base : rel, 1, &raw, &n)) {
-        if (decode_bytes(raw, n, rgba, w, h)) {
+        if (decode_bytes(raw, n, g)) {
             free(raw);
             return 1;
         }
+        clear_got(g);
         free(raw);
         bad = 1;
         if (why && why_cap > 0) {
             char labeled[1100];
-            snprintf(labeled, sizeof labeled, "materials/%s", base[0] ? base : rel);
+            snprintf(labeled, sizeof labeled, "materials/%s.tex", base[0] ? base : rel);
             copy_cap(why, why_cap, labeled);
         }
     }
-    if (why && why_cap > 0 && !why[0]) copy_cap(why, why_cap, rel);
+    if (why && why_cap > 0 && !why[0]) {
+        if (!strchr(rel, '/') && !raster_ext(rel))
+            snprintf(why, (size_t)why_cap, "materials/%s%s", rel, ends_with(rel, ".tex") ? "" : ".tex");
+        else
+            copy_cap(why, why_cap, rel);
+    }
     return bad ? -1 : 0;
 }
 
@@ -1221,63 +1500,184 @@ static char* load_json_prefixed(const char* dir, const char* assets, const char*
     return load_json_rel(dir, assets, alt);
 }
 
+static void paint_got(BwPlan* plan, const Jv* obj, const char* what, int decode_fail, PxGot* g, float mw, float mh, int model_full, int force_full) {
+    uint8_t* px = g ? g->rgba : NULL;
+    int w = g ? g->w : 0;
+    int h = g ? g->h : 0;
+    if (g) g->rgba = NULL;
+    add_pixels(plan, obj, what, decode_fail, px, w, h, mw, mh, model_full);
+    if (g && plan->nlayers > 0 && !plan->layers[plan->nlayers - 1].missing && g->nframes >= 2 && g->sheets) {
+        BwLayer* L = &plan->layers[plan->nlayers - 1];
+        L->sheets = g->sheets;
+        L->nsheets = g->nsheets;
+        L->frames = g->frames;
+        L->nframes = g->nframes;
+        g->sheets = NULL;
+        g->frames = NULL;
+        g->nsheets = 0;
+        g->nframes = 0;
+    }
+    if (g) clear_got(g);
+    if (force_full && plan->nlayers > 0) plan->layers[plan->nlayers - 1].full = 1;
+}
+
+/* A path buried in a bound object: value, file, path, model, src, or image. */
+static int pull_path(const Jv* v, char* out, int cap, int depth) {
+    static const char* keys[] = {"value", "file", "path", "model", "src", "image", NULL};
+    Jv inner;
+    int i;
+    if (!v || depth > 6 || cap < 2) return 0;
+    if (v->kind == 1) return j_str(v, out, cap) && out[0];
+    if (v->kind != 3) return 0;
+    for (i = 0; keys[i]; i++) {
+        if (!j_obj_get(v, keys[i], &inner)) continue;
+        if (pull_path(&inner, out, cap, depth + 1)) return 1;
+    }
+    return 0;
+}
+
+static int pull_material(const Jv* v, char* out, int cap, int depth) {
+    Jv inner, mat;
+    if (!v || depth > 6 || cap < 2) return 0;
+    if (v->kind != 3) return 0;
+    if (j_obj_get(v, "material", &mat)) {
+        mat = j_unwrap(&mat);
+        if (mat.kind == 1 && j_str(&mat, out, cap) && out[0]) return 1;
+    }
+    if (j_obj_get(v, "value", &inner) && pull_material(&inner, out, cap, depth + 1)) return 1;
+    return 0;
+}
+
+static void model_tried(const char* path, char* out, int cap) {
+    if (!path || !path[0]) {
+        snprintf(out, (size_t)cap, "(no path)");
+        return;
+    }
+    if (strchr(path, '/') || ends_with(path, ".json"))
+        snprintf(out, (size_t)cap, "%s", path);
+    else
+        snprintf(out, (size_t)cap, "models/%s.json", path);
+}
+
+static void material_tried(const char* path, char* out, int cap) {
+    if (!path || !path[0]) {
+        snprintf(out, (size_t)cap, "(no path)");
+        return;
+    }
+    if (strchr(path, '/') || ends_with(path, ".json"))
+        snprintf(out, (size_t)cap, "%s", path);
+    else
+        snprintf(out, (size_t)cap, "materials/%s.json", path);
+}
+
+static int paint_material_doc(BwPlan* plan, const Jv* obj, const char* dir, const char* assets, const Jv* material, float mw, float mh, int model_full, const char* err_name) {
+    char tex[512], why[1100];
+    PxGot g;
+    int st;
+    memset(&g, 0, sizeof g);
+    if (!first_texture(material, tex, sizeof tex)) {
+        paint_got(plan, obj, err_name && err_name[0] ? err_name : "(no texture)", 0, &g, mw, mh, model_full, 0);
+        return 1;
+    }
+    why[0] = 0;
+    st = load_pixels(dir, assets, tex, &g, why, (int)sizeof why);
+    paint_got(plan, obj, why[0] ? why : tex, st < 0, &g, mw, mh, model_full, 0);
+    return 1;
+}
+
+/* 1 when this document was a model or a material and the layer was recorded. */
+static int apply_doc(BwPlan* plan, const Jv* obj, const char* dir, const char* assets, const Jv* doc, const char* err_name) {
+    char matp[512], tried[1100];
+    char* mat;
+    Jv material;
+    int present = 0, model_full;
+    float mw, mh;
+    PxGot g;
+    if (j_field(doc, "material", matp, sizeof matp) && matp[0]) {
+        model_full = j_num(doc, "fullscreen", 0, &present) > 0.5f;
+        mw = j_num(doc, "width", 0, &present);
+        mh = j_num(doc, "height", 0, &present);
+        slash(matp);
+        mat = load_json_rel(dir, assets, matp);
+        if (!mat) mat = load_json_prefixed(dir, assets, matp, "materials/");
+        if (!mat || !j_doc(mat, &material)) {
+            free(mat);
+            material_tried(matp, tried, sizeof tried);
+            memset(&g, 0, sizeof g);
+            paint_got(plan, obj, tried, 0, &g, mw, mh, model_full, 0);
+            return 1;
+        }
+        paint_material_doc(plan, obj, dir, assets, &material, mw, mh, model_full, matp);
+        free(mat);
+        return 1;
+    }
+    if (first_texture(doc, matp, sizeof matp)) {
+        paint_material_doc(plan, obj, dir, assets, doc, 0, 0, 0, err_name);
+        return 1;
+    }
+    return 0;
+}
+
+static char* load_model_or_material(const char* dir, const char* assets, const char* path) {
+    char* blob = load_json_rel(dir, assets, path);
+    if (blob) return blob;
+    blob = load_json_prefixed(dir, assets, path, "models/");
+    if (blob) return blob;
+    return load_json_prefixed(dir, assets, path, "materials/");
+}
+
 static void take_image(BwPlan* plan, const char* dir, const char* assets, const Jv* obj) {
-    Jv im;
-    char path[512], tex[512], matp[512], why[1100];
-    char* model = NULL;
-    char* mat = NULL;
-    Jv root, material;
-    int present = 0, model_full = 0, st = 0;
-    float mw = 0, mh = 0;
-    uint8_t* px = NULL;
-    int w = 0, h = 0;
+    Jv im, doc;
+    char path[512], matp[512], tried[1100], why[1100], tex[512];
+    char* blob = NULL;
+    PxGot g;
+    int st;
     plan->image_tried++;
     if (!j_obj_get(obj, "image", &im)) return;
-    im = j_unwrap(&im);
-    if (im.kind != 1 || !j_str(&im, path, sizeof path)) {
-        push_missing(plan, "image", 0, 0, 0, 0, 0, 0, 1, 1);
-        return;
-    }
-    slash(path);
-    if (raster_ext(path)) {
-        st = load_pixels(dir, assets, path, &px, &w, &h, why, (int)sizeof why);
-        if (st <= 0) px = NULL;
-        add_pixels(plan, obj, why[0] ? why : path, st < 0, px, w, h, 0, 0, 0);
-        if (px && plan->nlayers > 0) {
+    if (pull_path(&im, path, sizeof path, 0)) {
+        slash(path);
+        if (raster_ext(path)) {
+            memset(&g, 0, sizeof g);
+            why[0] = 0;
+            st = load_pixels(dir, assets, path, &g, why, (int)sizeof why);
             /* direct stills cover the framebuffer, which is what the tint fixture draws */
-            plan->layers[plan->nlayers - 1].full = 1;
+            paint_got(plan, obj, why[0] ? why : path, st < 0, &g, 0, 0, 0, 1);
+            return;
         }
+        blob = load_model_or_material(dir, assets, path);
+        if (blob && j_doc(blob, &doc) && apply_doc(plan, obj, dir, assets, &doc, path)) {
+            free(blob);
+            return;
+        }
+        free(blob);
+        model_tried(path, tried, sizeof tried);
+        memset(&g, 0, sizeof g);
+        paint_got(plan, obj, tried, 0, &g, 0, 0, 0, 1);
         return;
     }
-    model = load_json_rel(dir, assets, path);
-    if (!model) model = load_json_prefixed(dir, assets, path, "models/");
-    if (!model || !j_doc(model, &root)) {
-        free(model);
-        push_missing(plan, path, 0, 0, 0, 0, 0, 0, 1, 1);
+    if (im.kind == 3 && apply_doc(plan, obj, dir, assets, &im, "")) return;
+    if (pull_material(&im, matp, sizeof matp, 0)) {
+        slash(matp);
+        blob = load_model_or_material(dir, assets, matp);
+        if (blob && j_doc(blob, &doc) && apply_doc(plan, obj, dir, assets, &doc, matp)) {
+            free(blob);
+            return;
+        }
+        free(blob);
+        material_tried(matp, tried, sizeof tried);
+        memset(&g, 0, sizeof g);
+        paint_got(plan, obj, tried, 0, &g, 0, 0, 0, 1);
         return;
     }
-    model_full = j_num(&root, "fullscreen", 0, &present) > 0.5f;
-    mw = j_num(&root, "width", 0, &present);
-    mh = j_num(&root, "height", 0, &present);
-    if (!j_field(&root, "material", matp, sizeof matp)) {
-        free(model);
-        push_missing(plan, path, 0, 0, 0, 0, 0, 0, 1, 1);
+    if (im.kind == 3 && first_texture(&im, tex, sizeof tex)) {
+        memset(&g, 0, sizeof g);
+        why[0] = 0;
+        st = load_pixels(dir, assets, tex, &g, why, (int)sizeof why);
+        paint_got(plan, obj, why[0] ? why : tex, st < 0, &g, 0, 0, 0, 0);
         return;
     }
-    slash(matp);
-    free(model);
-    mat = load_json_rel(dir, assets, matp);
-    if (!mat) mat = load_json_prefixed(dir, assets, matp, "materials/");
-    if (!mat || !j_doc(mat, &material) || !first_texture(&material, tex, sizeof tex)) {
-        free(mat);
-        push_missing(plan, matp, 0, 0, 0, 0, 0, 0, 1, 1);
-        return;
-    }
-    free(mat);
-    why[0] = 0;
-    st = load_pixels(dir, assets, tex, &px, &w, &h, why, (int)sizeof why);
-    if (st <= 0) px = NULL;
-    add_pixels(plan, obj, why[0] ? why : tex, st < 0, px, w, h, mw, mh, model_full);
+    memset(&g, 0, sizeof g);
+    paint_got(plan, obj, "(no path)", 0, &g, 0, 0, 0, 1);
 }
 
 static void take_text(BwPlan* plan, const Jv* obj) {
@@ -1401,7 +1801,11 @@ int bw_plan_load(const char* dir, const char* assets, BwPlan* out) {
 void bw_plan_free(BwPlan* plan) {
     int i;
     if (!plan) return;
-    for (i = 0; i < plan->nlayers; i++) free(plan->layers[i].rgba);
+    for (i = 0; i < plan->nlayers; i++) {
+        free(plan->layers[i].rgba);
+        free_sheets(plan->layers[i].sheets, plan->layers[i].nsheets);
+        free(plan->layers[i].frames);
+    }
     free(plan->layers);
     plan->layers = NULL;
     plan->nlayers = 0;
@@ -1414,7 +1818,10 @@ int bw_scene_ready(const char* dir, const char* assets) {
         bw_plan_free(&plan);
         return 0;
     }
-    if (plan.image_tried > 0) ok = plan.image_ok > 0;
+    /* A checker anywhere in the picture is partial, even when another
+       layer decoded. Text with no missing texture stays loaded. */
+    if (plan.missing > 0) ok = 0;
+    else if (plan.image_tried > 0) ok = plan.image_ok > 0;
     else ok = plan.has_text;
     bw_plan_free(&plan);
     return ok;

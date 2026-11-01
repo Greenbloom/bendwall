@@ -104,6 +104,38 @@ for rel in ("fixtures/play/pkg9big/lz/scene.pkg", "fixtures/play/pkg9big/dxt/sce
 magic_pkg = (root / "fixtures/play/named/scene.pkg").read_bytes()
 if b"PKGV0009" not in magic_pkg[:24]:
     raise SystemExit("named package is not PKGV0009")
+obj = grab(r"OBJ c=(\d+) (\d+) (\d+) m=(\d+) (\d+) (\d+)")
+oc = [int(obj.group(i)) for i in (1, 2, 3)]
+om = [int(obj.group(i)) for i in (4, 5, 6)]
+if oc[0] > 40 or oc[1] < 200 or oc[2] < 200 or om[0] < 200 or om[1] > 40 or om[2] < 200:
+    raise SystemExit(obj.group(0))
+mat = grab(r"MAT c=(\d+) (\d+) (\d+) m=(\d+) (\d+) (\d+)")
+mc = [int(mat.group(i)) for i in (1, 2, 3)]
+mm = [int(mat.group(i)) for i in (4, 5, 6)]
+if mc[0] > 40 or mc[1] < 200 or mc[2] < 200 or mm[0] < 200 or mm[1] > 40 or mm[2] < 200:
+    raise SystemExit(mat.group(0))
+mix = grab(r"MIX c=(\d+) (\d+) (\d+) miss=(\d+)")
+mx = [int(mix.group(i)) for i in (1, 2, 3)]
+if mx[0] > 40 or mx[1] < 200 or mx[2] < 200 or int(mix.group(4)) < 1:
+    raise SystemExit(mix.group(0))
+gif0 = [int(x) for x in grab(r"GIF0 (\d+) (\d+) (\d+)").groups()]
+gif1 = [int(x) for x in grab(r"GIF1 (\d+) (\d+) (\d+)").groups()]
+if gif0[0] < 200 or gif0[1] > 40 or gif0[2] > 40:
+    raise SystemExit(f"gif0 {gif0}")
+if gif1[1] < 200 or gif1[0] > 40 or gif1[2] > 40:
+    raise SystemExit(f"gif1 {gif1}")
+sheet = [int(x) for x in grab(r"SHEET (\d+) (\d+) (\d+) (\d+) (\d+) (\d+)").groups()]
+if sheet[0] < 200 or sheet[1] > 40 or sheet[2] > 40:
+    raise SystemExit(f"sheet0 {sheet}")
+if sheet[5] < 200 or sheet[3] > 40 or sheet[4] > 80:
+    raise SystemExit(f"sheet1 {sheet}")
+ready = grab(r"READY mixed=(\d+) gif=(\d+) label=(\d+)")
+if ready.group(1) != "0" or ready.group(2) != "1" or ready.group(3) != "1":
+    raise SystemExit(ready.group(0))
+if re.search(r"texture not found image$", err, re.M):
+    raise SystemExit("logged the word image\n" + err)
+if "models/missing-face.json" not in err:
+    raise SystemExit(err)
 if "PLAYMAIN ok" not in text:
     raise SystemExit(text)
 print("PLAY PASS")

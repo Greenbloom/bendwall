@@ -84,7 +84,7 @@ static int varied(void) {
   return 0;
 }
 
-static int decode_tex(const char* path, int* r, int* g, int* b) {
+static int decode_tex_at(const char* path, int time_ms, int* r, int* g, int* b) {
   FILE* f;
   long sz;
   uint8_t* buf;
@@ -100,7 +100,7 @@ static int decode_tex(const char* path, int* r, int* g, int* b) {
   if (!buf) { fclose(f); return 0; }
   n = (int)fread(buf, 1, (size_t)sz, f);
   fclose(f);
-  if (n != (int)sz || !bw_tex_decode(buf, n, &rgba, &w, &h) || !rgba || w < 1 || h < 1) {
+  if (n != (int)sz || !bw_tex_decode_time(buf, n, time_ms, &rgba, &w, &h) || !rgba || w < 1 || h < 1) {
     free(buf);
     free(rgba);
     return 0;
@@ -111,6 +111,10 @@ static int decode_tex(const char* path, int* r, int* g, int* b) {
   free(rgba);
   free(buf);
   return 1;
+}
+
+static int decode_tex(const char* path, int* r, int* g, int* b) {
+  return decode_tex_at(path, 0, r, g, b);
 }
 
 static int step_one_frame(void) {
@@ -378,6 +382,102 @@ int main(int argc, char** argv) {
   }
   printf("BAD %s\n", bw_play_line());
   bw_play_close();
+
+  bw_play_audio(NULL, 0);
+  snprintf(path, sizeof path, "%s/objimg", root);
+  if (!bw_play_open(path, 160, 90)) {
+    fprintf(stderr, "open objimg failed\n%s\n", bw_play_line());
+    return 1;
+  }
+  {
+    int cr = 0, cg = 0, cb = 0, mr = 0, mg = 0, mb = 0;
+    if (!at(10, 10, &cr, &cg, &cb) || !at(60, 10, &mr, &mg, &mb)) return 1;
+    printf("OBJ c=%d %d %d m=%d %d %d\n", cr, cg, cb, mr, mg, mb);
+    if (cr > 40 || cg < 200 || cb < 200 || mr < 200 || mg > 40 || mb < 200) bad = 1;
+  }
+  bw_play_close();
+
+  bw_play_audio(NULL, 0);
+  snprintf(path, sizeof path, "%s/matref", root);
+  if (!bw_play_open(path, 160, 90)) {
+    fprintf(stderr, "open matref failed\n%s\n", bw_play_line());
+    return 1;
+  }
+  {
+    int cr = 0, cg = 0, cb = 0, mr = 0, mg = 0, mb = 0;
+    if (!at(10, 10, &cr, &cg, &cb) || !at(60, 10, &mr, &mg, &mb)) return 1;
+    printf("MAT c=%d %d %d m=%d %d %d\n", cr, cg, cb, mr, mg, mb);
+    if (cr > 40 || cg < 200 || cb < 200 || mr < 200 || mg > 40 || mb < 200) bad = 1;
+  }
+  bw_play_close();
+
+  bw_play_audio(NULL, 0);
+  snprintf(path, sizeof path, "%s/objmiss", root);
+  if (!bw_play_open(path, 64, 64)) {
+    fprintf(stderr, "open objmiss failed\n%s\n", bw_play_line());
+    return 1;
+  }
+  printf("OBJMISS %s\n", bw_play_line());
+  bw_play_close();
+
+  bw_play_audio(NULL, 0);
+  snprintf(path, sizeof path, "%s/mixed", root);
+  if (!bw_play_open(path, 160, 90)) {
+    fprintf(stderr, "open mixed failed\n%s\n", bw_play_line());
+    return 1;
+  }
+  {
+    int cr = 0, cg = 0, cb = 0;
+    const char* line = bw_play_line();
+    const char* miss = line ? strstr(line, "miss=") : NULL;
+    int nmiss = miss ? atoi(miss + 5) : 0;
+    if (!at(20, 45, &cr, &cg, &cb)) return 1;
+    printf("MIX c=%d %d %d miss=%d\n", cr, cg, cb, nmiss);
+    if (cr > 40 || cg < 200 || cb < 200 || nmiss < 1) bad = 1;
+  }
+  bw_play_close();
+
+  bw_play_audio(NULL, 0);
+  snprintf(path, sizeof path, "%s/gifscene", root);
+  if (!bw_play_open(path, 160, 90)) {
+    fprintf(stderr, "open gifscene failed\n%s\n", bw_play_line());
+    return 1;
+  }
+  {
+    int r0 = 0, g0 = 0, b0 = 0, r1 = 0, g1 = 0, b1 = 0;
+    if (!at(80, 45, &r0, &g0, &b0)) return 1;
+    if (!bw_play_step(500) || !at(80, 45, &r1, &g1, &b1)) return 1;
+    printf("GIF0 %d %d %d\n", r0, g0, b0);
+    printf("GIF1 %d %d %d\n", r1, g1, b1);
+    if (r0 < 200 || g0 > 40 || b0 > 40) bad = 1;
+    if (g1 < 200 || r1 > 40 || b1 > 40) bad = 1;
+  }
+  bw_play_close();
+
+  {
+    int sr = 0, sg = 0, sb = 0, br = 0, bg = 0, bb = 0;
+    snprintf(path, sizeof path, "%s/sheet.tex", root);
+    if (!decode_tex_at(path, 0, &sr, &sg, &sb) || !decode_tex_at(path, 500, &br, &bg, &bb)) {
+      fprintf(stderr, "sheet decode failed\n");
+      return 1;
+    }
+    printf("SHEET %d %d %d %d %d %d\n", sr, sg, sb, br, bg, bb);
+    if (sr < 200 || sg > 40 || sb > 40) bad = 1;
+    if (bb < 200 || br > 40 || bg > 80) bad = 1;
+  }
+
+  {
+    char mixed[1200], gif[1200], label[1200];
+    int rm, rgf, rl;
+    snprintf(mixed, sizeof mixed, "%s/mixed", root);
+    snprintf(gif, sizeof gif, "%s/gifscene", root);
+    snprintf(label, sizeof label, "%s/label", root);
+    rm = bw_scene_ready(mixed, NULL);
+    rgf = bw_scene_ready(gif, NULL);
+    rl = bw_scene_ready(label, NULL);
+    printf("READY mixed=%d gif=%d label=%d\n", rm, rgf, rl);
+    if (rm != 0 || rgf != 1 || rl != 1) bad = 1;
+  }
 
   if (!diff) bad = 1;
   if (b16 < 0.9f || b32 < 0.9f || b64 < 0.9f || r16 > 0.05f) bad = 1;

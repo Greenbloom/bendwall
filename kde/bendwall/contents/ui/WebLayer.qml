@@ -60,27 +60,33 @@ Item {
 
     property bool pageReady: false
 
-    WebEngineProfile {
-        id: profile
-        storageName: "bendwall"
-        offTheRecord: true
-        userScripts: [
-            WebEngineScript {
-                name: "bendwall-host"
-                worldId: WebEngineScript.MainWorld
-                injectionPoint: WebEngineScript.DocumentCreation
-                sourceUrl: Qt.resolvedUrl("webshim.js")
-            }
-        ]
+    WebEngineScript {
+        id: shim
+        name: "bendwall-host"
+        worldId: WebEngineScript.MainWorld
+        injectionPoint: WebEngineScript.DocumentCreation
+        sourceUrl: Qt.resolvedUrl("webshim.js")
+    }
+
+    /* Qt 6.11 will not create a WebEngineProfile element from QML.
+       WebEngineProfilePrototype (6.9+) does. Leaving storageName unset
+       makes the instance off-the-record. The shim is attached to that
+       instance, which is where userScripts live. */
+    WebEngineProfilePrototype {
+        id: profileProto
+        Component.onCompleted: {
+            if (instance)
+                instance.userScripts.insert(shim)
+        }
     }
 
     WebEngineView {
         id: view
         anchors.fill: parent
-        profile: profile
-        url: host.pageUrl()
+        profile: profileProto.instance
         settings.localContentCanAccessFileUrls: true
         settings.localContentCanAccessRemoteUrls: true
+        Component.onCompleted: url = host.pageUrl()
         onLoadingChanged: function (load) {
             if (load.status === WebEngineView.LoadSucceededStatus) {
                 host.pageReady = true

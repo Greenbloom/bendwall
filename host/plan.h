@@ -81,6 +81,10 @@ typedef struct BwPlan {
     int nlayers;
     BwPartSys* parts;
     int nparts;
+    /* Soundtrack. 1 is full. A general.volume or a property named volume
+       above 1 is a percent. mute / muted silence the track. */
+    float video_volume;
+    int video_mute;
 } BwPlan;
 
 /* Top-level project keys only. Scene images walk object → model → material

@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 static int center(int* r, int* g, int* b, int* a) {
   int w = 0, h = 0, n;
@@ -135,6 +136,39 @@ static void constant_audio(void) {
   bw_play_audio(s, 256);
 }
 
+static void pcm_stats(const float* s, int n, float* peak, float* power) {
+  int i, frames;
+  double pk = 0, k, w, coeff, s0 = 0, s1 = 0, s2 = 0;
+  frames = n / 2;
+  if (frames < 8) {
+    *peak = 0;
+    *power = 0;
+    return;
+  }
+  for (i = 0; i < n; i++) {
+    double a = s[i] < 0 ? -(double)s[i] : (double)s[i];
+    if (a > pk) pk = a;
+  }
+  k = 440.0 * (double)frames / 44100.0;
+  w = 6.283185307179586 * k / (double)frames;
+  coeff = 2.0 * cos(w);
+  for (i = 0; i < frames; i++) {
+    s0 = (double)s[i * 2] + coeff * s1 - s2;
+    s2 = s1;
+    s1 = s0;
+  }
+  *peak = (float)pk;
+  *power = (float)(s1 * s1 + s2 * s2 - coeff * s1 * s2);
+  if (*power < 0.f) *power = 0.f;
+}
+
+static int pull_pcm(float* dst, int cap, int ms) {
+  /* Always wait the full interval. A short peek still holds the previous
+     gain, and returning as soon as it is non-empty would report that. */
+  usleep((useconds_t)ms * 1000);
+  return bw_play_video_pcm(dst, cap);
+}
+
 static void tone_audio(void) {
   float s[256];
   int i;
@@ -164,7 +198,8 @@ int main(int argc, char** argv) {
     bw_play_set_video_volume(-1.f);
     v2 = bw_play_video_volume();
     printf("VOL %.2f %.2f %.2f\n", v0, v1, v2);
-    if (v0 != 0.f || v1 != 1.f || v2 != 0.f) bad = 1;
+    if (v0 != 1.f || v1 != 1.f || v2 != 0.f) bad = 1;
+    bw_play_set_video_volume(1.f);
   }
   snprintf(path, sizeof path, "%s/video", root);
   constant_audio();
@@ -529,6 +564,101 @@ int main(int argc, char** argv) {
     bw_play_close();
     if (saved[0]) setenv("BENDWALL_ASSETS", saved, 1);
     else unsetenv("BENDWALL_ASSETS");
+  }
+
+  {
+    float buf[4096];
+    float full_power = 0;
+    int n;
+    float peak, power, band;
+    bw_play_audio(NULL, 0);
+    bw_play_set_video_volume(1.f);
+    bw_play_set_video_mute(0);
+    bw_play_set_video_duck(0);
+    snprintf(path, sizeof path, "%s/vidaud", root);
+    if (!bw_play_open(path, 64, 36)) {
+      fprintf(stderr, "open vidadu failed\n%s\n", bw_play_line());
+      return 1;
+    }
+    n = pull_pcm(buf, 4096, 600);
+    pcm_stats(buf, n, &peak, &power);
+    full_power = power;
+    printf("VAUD peak=%.3f power=%.0f\n", peak, power);
+    if (peak < 0.5f || power < 1000.f) bad = 1;
+    bw_play_set_video_volume(0.f);
+    n = pull_pcm(buf, 4096, 350);
+    pcm_stats(buf, n, &peak, &power);
+    printf("VAUD0 peak=%.3f\n", peak);
+    if (peak > 0.02f) bad = 1;
+    bw_play_set_video_volume(1.f);
+    bw_play_set_video_mute(1);
+    n = pull_pcm(buf, 4096, 350);
+    pcm_stats(buf, n, &peak, &power);
+    printf("VAUDUSER peak=%.3f\n", peak);
+    if (peak > 0.02f) bad = 1;
+    bw_play_set_video_mute(0);
+    bw_play_set_video_duck(1);
+    n = pull_pcm(buf, 4096, 350);
+    pcm_stats(buf, n, &peak, &power);
+    printf("VAUDDUCK peak=%.3f\n", peak);
+    if (peak > 0.02f) bad = 1;
+    bw_play_set_video_duck(0);
+    n = pull_pcm(buf, 4096, 500);
+    pcm_stats(buf, n, &peak, &power);
+    bw_play_step(0);
+    bw_play_band(0, 0, &band);
+    printf("VAUDISO band=%.3f peak=%.3f\n", band, peak);
+    if (peak < 0.5f || band > 0.05f) bad = 1;
+    bw_play_close();
+
+    snprintf(path, sizeof path, "%s/vidaudmute", root);
+    if (!bw_play_open(path, 64, 36)) {
+      fprintf(stderr, "open vidadumute failed\n%s\n", bw_play_line());
+      return 1;
+    }
+    n = pull_pcm(buf, 4096, 500);
+    pcm_stats(buf, n, &peak, &power);
+    printf("VAUDPROJ peak=%.3f\n", peak);
+    if (peak > 0.02f) bad = 1;
+    bw_play_close();
+
+    snprintf(path, sizeof path, "%s/vidaudhalf", root);
+    if (!bw_play_open(path, 64, 36)) {
+      fprintf(stderr, "open vidaudhalf failed\n%s\n", bw_play_line());
+      return 1;
+    }
+    n = pull_pcm(buf, 4096, 500);
+    pcm_stats(buf, n, &peak, &power);
+    printf("VAUDHALF peak=%.3f ratio=%.3f\n", peak, full_power > 1.f ? power / full_power : 0.f);
+    if (peak < 0.15f || peak > 0.75f) bad = 1;
+    if (!(full_power > 1.f && power / full_power >= 0.12f && power / full_power <= 0.45f)) bad = 1;
+    bw_play_close();
+
+    snprintf(path, sizeof path, "%s/vidaudmap", root);
+    if (!bw_play_open(path, 64, 36)) {
+      fprintf(stderr, "open vidaudmap failed\n%s\n", bw_play_line());
+      return 1;
+    }
+    n = pull_pcm(buf, 4096, 500);
+    pcm_stats(buf, n, &peak, &power);
+    printf("VAUDMAP peak=%.3f ratio=%.3f\n", peak, full_power > 1.f ? power / full_power : 0.f);
+    if (peak < 0.08f || peak > 0.45f) bad = 1;
+    if (!(full_power > 1.f && power / full_power >= 0.02f && power / full_power <= 0.15f)) bad = 1;
+    bw_play_close();
+
+    snprintf(path, sizeof path, "%s/vidaudmp4", root);
+    if (!bw_play_open(path, 64, 36)) {
+      fprintf(stderr, "open vidadump4 failed\n%s\n", bw_play_line());
+      return 1;
+    }
+    n = pull_pcm(buf, 4096, 700);
+    pcm_stats(buf, n, &peak, &power);
+    printf("VAUDAAC peak=%.3f ratio=%.3f\n", peak, full_power > 1.f ? power / full_power : 0.f);
+    if (peak < 0.2f || !(full_power > 1.f && power / full_power >= 0.05f)) bad = 1;
+    bw_play_close();
+    bw_play_set_video_volume(1.f);
+    bw_play_set_video_mute(0);
+    bw_play_set_video_duck(-1);
   }
 
   if (!diff) bad = 1;

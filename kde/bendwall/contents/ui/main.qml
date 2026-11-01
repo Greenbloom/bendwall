@@ -52,13 +52,25 @@ Item {
             try {
                 var v = wallpaper.configuration.VideoVolume
                 if (v === undefined || v === null || v === "")
-                    return 0
+                    return 1
                 var n = Number(v)
                 if (isNaN(n))
-                    return 0
+                    return 1
                 return n / 100
             } catch (e) {
-                return 0
+                return 1
+            }
+        }
+        videoMuted: {
+            try {
+                var m = wallpaper.configuration.VideoMute
+                if (m === undefined || m === null || m === "")
+                    return false
+                if (m === false || m === 0 || m === "false" || m === "0")
+                    return false
+                return true
+            } catch (e) {
+                return false
             }
         }
         visible: !root.wallpaperIsWeb() || webLoader.status !== Loader.Ready

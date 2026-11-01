@@ -1101,6 +1101,30 @@ static int j_obj_get(const Jv* obj, const char* key, Jv* out) {
     return 0;
 }
 
+static void j_obj_each(const Jv* obj, void (*fn)(const char*, const Jv*, void*), void* ud) {
+    const char* p;
+    const char* end;
+    if (!obj || obj->kind != 3 || obj->n < 2 || !fn) return;
+    p = obj->p + 1;
+    end = obj->p + obj->n;
+    while (p < end) {
+        Jv k, v;
+        char name[256];
+        p = skip_ws(p, end);
+        if (p < end && *p == '}') return;
+        if (!j_val(p, end, &k) || k.kind != 1) return;
+        if (!j_str(&k, name, sizeof name)) return;
+        p = skip_ws(k.p + k.n, end);
+        if (p >= end || *p != ':') return;
+        p++;
+        if (!j_val(p, end, &v)) return;
+        fn(name, &v, ud);
+        p = v.p + v.n;
+        p = skip_ws(p, end);
+        if (p < end && *p == ',') p++;
+    }
+}
+
 static int j_root(const char* json, const char* key, Jv* out) {
     Jv root;
     if (!j_doc(json, &root)) return 0;
@@ -2164,6 +2188,80 @@ static int load_scene(const char* dir, const char* assets, const char* file_fiel
     return 0;
 }
 
+static float audio_gain(float v) {
+    if (v > 1.f) v /= 100.f;
+    if (v < 0.f) v = 0.f;
+    if (v > 1.f) v = 1.f;
+    return v;
+}
+
+static int j_scalar(const Jv* v, float* out) {
+    Jv u;
+    char b[64];
+    if (!v || !out) return 0;
+    u = j_unwrap(v);
+    if (u.kind == 5) {
+        *out = 1.f;
+        return 1;
+    }
+    if (u.kind == 6) {
+        *out = 0.f;
+        return 1;
+    }
+    if (!j_lit(&u, b, sizeof b)) return 0;
+    *out = pf(b, NULL);
+    return 1;
+}
+
+static void apply_audio_key(BwPlan* out, const char* name, const Jv* val) {
+    char key[64];
+    float n;
+    int i;
+    if (!out || !name || !name[0]) return;
+    for (i = 0; name[i] && i < (int)sizeof key - 1; i++)
+        key[i] = (char)tolower((unsigned char)name[i]);
+    key[i] = 0;
+    if (!j_scalar(val, &n)) return;
+    if (!strcmp(key, "volume")) out->video_volume = audio_gain(n);
+    else if (!strcmp(key, "mute") || !strcmp(key, "muted")) out->video_mute = n > 0.5f;
+}
+
+static void apply_audio_prop(const char* name, const Jv* val, void* ud) {
+    apply_audio_key((BwPlan*)ud, name, val);
+}
+
+/* general.volume / mute first, then a property of the same name. A property
+   wins when both are present. The array form is what the settings page
+   reads; web items use an object map. */
+static void take_project_audio(BwPlan* out, const Jv* root) {
+    Jv gen, props, item, val;
+    int present = 0;
+    float n;
+    int i, c;
+    out->video_volume = 1.f;
+    out->video_mute = 0;
+    if (!root || !j_obj_get(root, "general", &gen) || gen.kind != 3) return;
+    n = j_num(&gen, "volume", 1.f, &present);
+    if (present) out->video_volume = audio_gain(n);
+    n = j_num(&gen, "mute", 0.f, &present);
+    if (present) out->video_mute = n > 0.5f;
+    n = j_num(&gen, "muted", 0.f, &present);
+    if (present && n > 0.5f) out->video_mute = 1;
+    if (!j_obj_get(&gen, "properties", &props)) return;
+    if (props.kind == 4) {
+        c = j_arr_count(&props);
+        for (i = 0; i < c; i++) {
+            char name[64];
+            if (!j_arr_at(&props, i, &item) || item.kind != 3) continue;
+            if (!j_field(&item, "name", name, sizeof name)) continue;
+            if (!j_obj_get(&item, "value", &val)) continue;
+            apply_audio_key(out, name, &val);
+        }
+        return;
+    }
+    if (props.kind == 3) j_obj_each(&props, apply_audio_prop, out);
+}
+
 static void join_file(char* dst, int cap, const char* dir, const char* file) {
     if (!file || !file[0]) {
         dst[0] = 0;
@@ -2183,6 +2281,7 @@ int bw_plan_load(const char* dir, const char* assets, BwPlan* out) {
     char path[1100], type[32], file[512], title[160];
     Jv root, v;
     memset(out, 0, sizeof *out);
+    out->video_volume = 1.f;
     snprintf(out->kind, sizeof out->kind, "scene");
     if (!dir || !dir[0]) {
         snprintf(out->kind, sizeof out->kind, "demo");
@@ -2200,6 +2299,7 @@ int bw_plan_load(const char* dir, const char* assets, BwPlan* out) {
         if (j_obj_get(&root, "file", &v)) j_str(&v, file, sizeof file);
         if (j_obj_get(&root, "title", &v)) j_str(&v, title, sizeof title);
         slash(file);
+        take_project_audio(out, &root);
     }
     free(proj);
     snprintf(out->type, sizeof out->type, "%s", type);

@@ -43,12 +43,19 @@ xml = pathlib.Path("kde/bendwall/contents/config/main.xml").read_text()
 qml = pathlib.Path("kde/bendwall/contents/ui/config.qml").read_text()
 main = pathlib.Path("kde/bendwall/contents/ui/main.qml").read_text()
 i = xml.find("VideoVolume")
-if i < 0 or "<default>0</default>" not in xml[i:i + 240]:
-    raise SystemExit("video volume default is not 0")
-if "property int cfg_VideoVolume: 0" not in qml:
+if i < 0 or "<default>100</default>" not in xml[i:i + 240]:
+    raise SystemExit("video volume default is not 100")
+j = xml.find("VideoMute")
+if j < 0 or "<default>false</default>" not in xml[j:j + 240]:
+    raise SystemExit("video mute default is not false")
+if "property int cfg_VideoVolume: 100" not in qml:
     raise SystemExit("config slider missing")
-if "videoVolume" not in main or "return 0" not in main:
-    raise SystemExit("main.qml does not default video volume to 0")
+if "property bool cfg_VideoMute: false" not in qml:
+    raise SystemExit("config mute missing")
+if "videoVolume" not in main or "return 1" not in main:
+    raise SystemExit("main.qml does not default video volume to 1")
+if "videoMuted" not in main or "return false" not in main:
+    raise SystemExit("main.qml does not default video mute to false")
 print("VOLUME PASS")
 PY
 QT_QPA_PLATFORM=offscreen timeout 25 ./build/kde/bendwall-preview --watch-diff "$PWD/fixtures/play/spark" > build/watch-diff.out

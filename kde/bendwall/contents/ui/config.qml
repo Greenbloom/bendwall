@@ -9,7 +9,8 @@ Column {
     padding: 12
 
     property string cfg_Item: ""
-    property int cfg_VideoVolume: 0
+    property int cfg_VideoVolume: 100
+    property bool cfg_VideoMute: false
 
     function idList() {
         try {
@@ -77,7 +78,7 @@ Column {
     }
 
     Text {
-        text: "Starts at 0, muted. The video track is not played."
+        text: "100 plays the video's own soundtrack. 0 mutes it. The track also mutes while another app is fullscreen or playing audio."
         color: "#9a958c"
         font.pixelSize: 11
         width: 236
@@ -100,9 +101,17 @@ Column {
         font.pixelSize: 12
     }
 
+    CheckBox {
+        id: muteBox
+        text: "Mute video"
+        checked: column.cfg_VideoMute
+        onClicked: column.cfg_VideoMute = checked
+    }
+
     onCfg_ItemChanged: applyCfg()
     onCfg_VideoVolumeChanged: {
         if (Math.round(volume.value) !== cfg_VideoVolume)
             volume.value = cfg_VideoVolume
     }
+    onCfg_VideoMuteChanged: muteBox.checked = cfg_VideoMute
 }

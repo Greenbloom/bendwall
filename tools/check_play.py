@@ -137,8 +137,27 @@ if re.search(r"texture not found image$", err, re.M):
 if "models/missing-face.json" not in err:
     raise SystemExit(err)
 vol = [float(x) for x in grab(r"VOL ([0-9.]+) ([0-9.]+) ([0-9.]+)").groups()]
-if vol != [0.0, 1.0, 0.0]:
+if vol != [1.0, 1.0, 0.0]:
     raise SystemExit(f"vol {vol}")
+vaud = grab(r"VAUD peak=([0-9.]+) power=([0-9.]+)")
+if float(vaud.group(1)) < 0.5 or float(vaud.group(2)) < 1000:
+    raise SystemExit(vaud.group(0))
+for label in ("VAUD0", "VAUDUSER", "VAUDDUCK", "VAUDPROJ"):
+    p = float(grab(label + r" peak=([0-9.]+)").group(1))
+    if p > 0.02:
+        raise SystemExit(f"{label} peak {p}")
+iso = grab(r"VAUDISO band=([0-9.]+) peak=([0-9.]+)")
+if float(iso.group(1)) > 0.05 or float(iso.group(2)) < 0.5:
+    raise SystemExit(iso.group(0))
+half = grab(r"VAUDHALF peak=([0-9.]+) ratio=([0-9.]+)")
+if not (0.15 <= float(half.group(1)) <= 0.75) or not (0.12 <= float(half.group(2)) <= 0.45):
+    raise SystemExit(half.group(0))
+mapped = grab(r"VAUDMAP peak=([0-9.]+) ratio=([0-9.]+)")
+if not (0.08 <= float(mapped.group(1)) <= 0.45) or not (0.02 <= float(mapped.group(2)) <= 0.15):
+    raise SystemExit(mapped.group(0))
+aac = grab(r"VAUDAAC peak=([0-9.]+) ratio=([0-9.]+)")
+if float(aac.group(1)) < 0.2 or float(aac.group(2)) < 0.05:
+    raise SystemExit(aac.group(0))
 s0 = grab(r"SPARK0 .*parts=(\d+) alive=(\d+) vol=([0-9.]+) t=(\d+)")
 s1 = grab(r"SPARK1 .*parts=(\d+) alive=(\d+) vol=([0-9.]+) t=(\d+)")
 if s0.group(1) != "1" or s0.group(2) != "0" or s0.group(4) != "0":

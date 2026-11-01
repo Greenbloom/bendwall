@@ -321,6 +321,46 @@ def write_spark():
     write(os.path.join(PLAY, "spark-assets", "materials", "particle", "spark.png"), png_rgba(4, 4, white))
 
 
+def tone_clip(path, acodec, vcodec, extra):
+    # This ffmpeg's sine source cannot set amplitude and peaks near 1/8.
+    # aevalsrc is a full-scale stereo 440 Hz tone, and the mp4 is AAC.
+    cmd = [
+        "ffmpeg", "-y", "-loglevel", "error",
+        "-f", "lavfi", "-i",
+        "aevalsrc=0.9*sin(440*2*PI*t)|0.9*sin(440*2*PI*t):s=44100:d=8",
+        "-f", "lavfi", "-i", "color=c=red:s=64x36:r=10:d=8",
+        "-map", "1:v", "-map", "0:a", "-shortest",
+        "-c:v", vcodec, "-c:a", acodec,
+    ] + extra + [path]
+    subprocess.run(cmd, check=True)
+
+
+def write_vidaud():
+    base = os.path.join(PLAY, "vidaud")
+    os.makedirs(base, exist_ok=True)
+    tone_clip(os.path.join(base, "tone.mkv"), "pcm_s16le", "mpeg4", [])
+    mp4 = os.path.join(base, "tone.mp4")
+    try:
+        tone_clip(mp4, "aac", "libx264", ["-b:a", "160k", "-pix_fmt", "yuv420p"])
+    except subprocess.CalledProcessError:
+        tone_clip(mp4, "aac", "mpeg4", ["-b:a", "160k"])
+    write_text(os.path.join(base, "project.json"),
+               '{ "type": "video", "file": "tone.mkv", "title": "Tone",'
+               ' "general": {"volume": 1, "mute": false} }\n')
+    write_text(os.path.join(PLAY, "vidaudmute", "project.json"),
+               '{ "type": "video", "file": "../vidaud/tone.mkv", "title": "Muted",'
+               ' "general": {"volume": 1, "mute": true} }\n')
+    write_text(os.path.join(PLAY, "vidaudhalf", "project.json"),
+               '{ "type": "video", "file": "../vidaud/tone.mkv", "title": "Half",'
+               ' "general": {"properties": [{"name": "volume", "type": "slider", "value": 50}]} }\n')
+    write_text(os.path.join(PLAY, "vidaudmap", "project.json"),
+               '{ "type": "video", "file": "../vidaud/tone.mkv", "title": "Map",'
+               ' "general": {"volume": 1, "properties": {"volume": {"type": "slider", "value": 25}}} }\n')
+    write_text(os.path.join(PLAY, "vidaudmp4", "project.json"),
+               '{ "type": "video", "file": "../vidaud/tone.mp4", "title": "Aac",'
+               ' "general": {"volume": 100} }\n')
+
+
 def main():
     write(os.path.join(PLAY, "texscene", "scene.pkg"), scene_pkg())
     write(os.path.join(PLAY, "texscene", "decoy.png"), png_rgba(8, 8, YELLOW * 64))
@@ -431,6 +471,7 @@ def main():
                '{ "type": "scene", "file": "gifscene.json", "title": "Hack page" }\n')
     write(os.path.join(PLAY, "sheet.tex"), sheet_tex())
     write_spark()
+    write_vidaud()
     print("mktexscene ok")
 
 

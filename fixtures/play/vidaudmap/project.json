@@ -1,0 +1,1 @@
+{ "type": "video", "file": "../vidaud/tone.mkv", "title": "Map", "general": {"volume": 1, "properties": {"volume": {"type": "slider", "value": 25}}} }

@@ -68,6 +68,13 @@ void FrameItem::setVideoVolume(qreal volume) {
     emit videoVolumeChanged();
 }
 
+void FrameItem::setVideoMuted(bool on) {
+    if (m_mute == on) return;
+    m_mute = on;
+    m_engine.setVideoMute(m_mute);
+    emit videoMutedChanged();
+}
+
 void FrameItem::ensureTimer() {
     if (!m_timer) {
         m_timer = new QTimer(this);
@@ -102,6 +109,7 @@ void FrameItem::tick() {
     }
     if (w < 8 || h < 8) return;
     m_engine.setVideoVolume((float)m_vol);
+    m_engine.setVideoMute(m_mute);
     if (!m_engine.ready()) {
         QString dir = m_dir;
         if (dir.isEmpty()) dir = itemDirectory(m_item);

@@ -13,8 +13,9 @@ public:
     void close();
     bool step(int dtMs);
     void setAudio(const QVector<float>& interleaved);
-    /* 0..1. 0 leaves video silent. The player does not open an audio stream. */
+    /* 0..1. The default the player uses is 1. 0 mutes the soundtrack. */
     void setVideoVolume(float volume);
+    void setVideoMute(bool on);
     QImage image() const;
     QString line() const;
     QString kind() const;

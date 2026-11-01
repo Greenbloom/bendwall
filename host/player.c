@@ -3,8 +3,10 @@
    picture and the text bitmap, then runs the built-in passes. */
 #include "plan.h"
 #include "player.h"
+#include "vaudio.h"
 
 #include <ctype.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -39,6 +41,8 @@ int bw_text_rgba(const char* s, int* w, int* h, uint8_t** rgba);
 void bw_audio_inject(const float* s, int n);
 int bw_audio_samples(float* dst, int cap);
 void bw_audio_live_start(void);
+int bw_audio_others(void);
+int bw_wm_fullscreen(void);
 
 static const char* k_vs =
   "#version 330 core\n"
@@ -95,7 +99,12 @@ static int g_nlive;
 static int g_miss;
 static uint8_t* g_px;
 static int g_time_ms;
-static float g_video_vol;
+static float g_video_vol = 1.f;
+static float g_proj_vol = 1.f;
+static int g_user_mute;
+static int g_proj_mute;
+static int g_duck = -1;
+static pthread_mutex_t g_gain_mu = PTHREAD_MUTEX_INITIALIZER;
 static int g_uni;
 static int g_scroll, g_spin, g_opacity, g_colorkey, g_tint, g_pulse;
 static int g_has_text, g_has_video, g_has_image, g_text_layer;
@@ -210,9 +219,8 @@ static int vid_open(const char* path) {
     }
   }
   if (g_vid.stream < 0) { vid_close(); return 0; }
-  /* Audio packets are never decoded. Volume 0 is the default, and no
-     volume opens an audio decoder or a playback device. */
-  (void)g_video_vol;
+  /* Audio packets stay on this demuxer unread. The soundtrack is a second
+     demuxer, so a picture seek cannot starve it or land in the spectrum. */
   codec = avcodec_find_decoder(g_vid.fmt->streams[g_vid.stream]->codecpar->codec_id);
   if (!codec) { vid_close(); return 0; }
   g_vid.ctx = avcodec_alloc_context3(codec);
@@ -883,6 +891,7 @@ void bw_play_close(void) {
     bw_gl_shutdown();
     bw_gl_end();
   }
+  bw_va_close();
   vid_close();
   free(g_px);
   g_px = NULL;
@@ -891,13 +900,62 @@ void bw_play_close(void) {
   reset_plan();
 }
 
+static float video_gain(void) {
+  float vol, proj, g;
+  int mute, proj_mute, duck;
+  const char* env;
+  pthread_mutex_lock(&g_gain_mu);
+  vol = g_video_vol;
+  proj = g_proj_vol;
+  mute = g_user_mute;
+  proj_mute = g_proj_mute;
+  duck = g_duck;
+  pthread_mutex_unlock(&g_gain_mu);
+  if (mute || proj_mute) return 0.f;
+  if (duck > 0) return 0.f;
+  if (duck < 0) {
+    env = getenv("BENDWALL_VIDEO_DUCK");
+    if (!(env && env[0] == '0' && env[1] == 0)) {
+      if (bw_audio_others() || bw_wm_fullscreen()) return 0.f;
+    }
+  }
+  g = vol * proj;
+  if (g < 0.f) g = 0.f;
+  if (g > 1.f) g = 1.f;
+  return g;
+}
+
 void bw_play_set_video_volume(float volume) {
   if (volume < 0.f) volume = 0.f;
   if (volume > 1.f) volume = 1.f;
+  pthread_mutex_lock(&g_gain_mu);
   g_video_vol = volume;
+  pthread_mutex_unlock(&g_gain_mu);
 }
 
-float bw_play_video_volume(void) { return g_video_vol; }
+float bw_play_video_volume(void) {
+  float v;
+  pthread_mutex_lock(&g_gain_mu);
+  v = g_video_vol;
+  pthread_mutex_unlock(&g_gain_mu);
+  return v;
+}
+
+void bw_play_set_video_mute(int on) {
+  pthread_mutex_lock(&g_gain_mu);
+  g_user_mute = on ? 1 : 0;
+  pthread_mutex_unlock(&g_gain_mu);
+}
+
+void bw_play_set_video_duck(int mode) {
+  if (mode > 1) mode = 1;
+  if (mode < -1) mode = -1;
+  pthread_mutex_lock(&g_gain_mu);
+  g_duck = mode;
+  pthread_mutex_unlock(&g_gain_mu);
+}
+
+int bw_play_video_pcm(float* dst, int cap) { return bw_va_pcm(dst, cap); }
 
 void bw_play_audio(const float* interleaved, int nfloats) {
   bw_audio_inject(interleaved, nfloats);
@@ -932,8 +990,15 @@ int bw_play_open(const char* dir, int w, int h) {
   g_miss = plan.missing;
   g_scene_w = plan.scene_w;
   g_scene_h = plan.scene_h;
+  pthread_mutex_lock(&g_gain_mu);
+  g_proj_vol = plan.video_volume;
+  if (g_proj_vol < 0.f) g_proj_vol = 0.f;
+  if (g_proj_vol > 1.f) g_proj_vol = 1.f;
+  g_proj_mute = plan.video_mute ? 1 : 0;
+  pthread_mutex_unlock(&g_gain_mu);
   if (plan.video[0] && strcmp(g_kind, "video") == 0) {
     if (!vid_open(plan.video)) fprintf(stderr, "bendwall: missing video %s\n", plan.video);
+    bw_va_open(plan.video, video_gain);
   }
   if (!bw_gl_init(g_w, g_h)) {
     bw_plan_free(&plan);

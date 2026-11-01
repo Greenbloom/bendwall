@@ -1,0 +1,1 @@
+{ "type": "video", "file": "../vidaud/tone.mkv", "title": "Half", "general": {"properties": [{"name": "volume", "type": "slider", "value": 50}]} }

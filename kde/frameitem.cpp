@@ -7,6 +7,7 @@
 #include <QPainter>
 
 FrameItem::FrameItem(QQuickItem* parent) : QQuickPaintedItem(parent) {
+    setRenderTarget(QQuickPaintedItem::Image);
     setOpaquePainting(true);
 }
 
@@ -106,8 +107,8 @@ void FrameItem::tick() {
         const double fps = m_frames * 1000.0 / (double)(now - m_mark);
         const double cpu = bendwallCpuPercent(m_ticks, ticks, now - m_mark);
         m_stats = QString("%1 fps   %2% cpu   %3")
-                      .arg(fps, 0, 'f', 1)
-                      .arg(cpu, 0, 'f', 1)
+                      .arg(bendwallFixed1(fps))
+                      .arg(bendwallFixed1(cpu))
                       .arg(m_kind);
         m_frames = 0;
         m_ticks = ticks;

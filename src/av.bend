@@ -14,3 +14,8 @@ def av_video(path: String) -> IO(U32):
 def av_tex(path: String, index: U32) -> IO(U32):
   import "./eff_av.c"
   import "./eff_av.js"
+
+# 1 when the player would draw a decoded picture or a text layer.
+def scene_ready(dir: String, assets: String) -> IO(U32):
+  import "./eff_av.c"
+  import "./eff_av.js"

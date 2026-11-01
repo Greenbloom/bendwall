@@ -1,0 +1,6 @@
+{
+  "general": {"properties": {"schemecolor": {"type": "color", "value": "1 0 0"}}},
+  "file": "index.html",
+  "title": "Colorful Matrix",
+  "type": "web"
+}

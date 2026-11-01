@@ -7,6 +7,7 @@ ui = root / "kde/bendwall/contents/ui"
 web = (ui / "WebLayer.qml").read_text()
 main = (ui / "main.qml").read_text()
 harness = (root / "kde/harness.qml").read_text()
+watch = (root / "kde/watch.qml").read_text()
 shim = (ui / "webshim.js").read_text()
 host = (root / "host/webshim.js").read_text()
 blank = (ui / "blank.html").read_text()
@@ -28,8 +29,12 @@ for s in need:
         raise SystemExit("missing " + s)
 if "try {" not in main or "wallpaperKind" not in main or "WebLayer.qml" not in main:
     raise SystemExit("main.qml does not switch on wallpaperKind")
-if "QtWebEngine" in harness:
-    raise SystemExit("harness imports QtWebEngine")
+if "wallpaperDir" not in main or "bendwallFrame" not in main or "bendwallWeb" not in main:
+    raise SystemExit("main.qml does not pin wallpaperDir")
+if "bendwall/contents/ui/main.qml" not in watch:
+    raise SystemExit("watch.qml does not load main.qml")
+if "QtWebEngine" in harness or "QtWebEngine" in watch:
+    raise SystemExit("harness or watch imports QtWebEngine")
 if shim != host:
     raise SystemExit("package webshim.js drifted from host/webshim.js")
 if "applyUserProperties" not in shim or "wallpaperRegisterAudioListener" not in shim:

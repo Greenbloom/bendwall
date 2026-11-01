@@ -106,6 +106,19 @@ double bendwallCpuPercent(long ticks0, long ticks1, long elapsedMs) {
     return (double)(ticks1 - ticks0) / (double)clk / ((double)elapsedMs / 1000.0) * 100.0;
 }
 
+QString bendwallFixed1(double v) {
+    char buf[64];
+    int neg = 0;
+    long scaled;
+    if (v < 0) {
+        neg = 1;
+        v = -v;
+    }
+    scaled = (long)(v * 10.0 + 0.5);
+    snprintf(buf, sizeof buf, "%s%ld.%ld", neg ? "-" : "", scaled / 10, scaled % 10);
+    return QString::fromLatin1(buf);
+}
+
 bool Engine::load() {
     Api& a = api();
     m_err = a.err;

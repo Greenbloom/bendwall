@@ -29,3 +29,5 @@ private:
 
 long bendwallProcTicks();
 double bendwallCpuPercent(long ticks0, long ticks1, long elapsedMs);
+/* One decimal and a '.' even when LC_NUMERIC uses a comma. */
+QString bendwallFixed1(double v);

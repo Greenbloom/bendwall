@@ -369,18 +369,9 @@ int bw_gl_f2(int prog, const char* name, uint32_t a, uint32_t b) {
   return 1;
 }
 
-int bw_gl_quad(int prog, int tex,
-    uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1,
-    uint32_t u0, uint32_t v0, uint32_t u1, uint32_t v1) {
-  float v[20];
+int bw_gl_verts(int prog, int tex, const float* v) {
   GLint loc;
-  float X0 = fbits(x0), Y0 = fbits(y0), X1 = fbits(x1), Y1 = fbits(y1);
-  float U0 = fbits(u0), V0 = fbits(v0), U1 = fbits(u1), V1 = fbits(v1);
-  if (!g_ok || prog <= 0 || tex <= 0) return 0;
-  v[0] = X0; v[1] = Y0; v[2] = 0; v[3] = U0; v[4] = V0;
-  v[5] = X1; v[6] = Y0; v[7] = 0; v[8] = U1; v[9] = V0;
-  v[10] = X0; v[11] = Y1; v[12] = 0; v[13] = U0; v[14] = V1;
-  v[15] = X1; v[16] = Y1; v[17] = 0; v[18] = U1; v[19] = V1;
+  if (!g_ok || prog <= 0 || tex <= 0 || !v) return 0;
   glUseProgram((GLuint)prog);
   glActiveTexture(GL_TEXTURE0);
   glBindTexture(GL_TEXTURE_2D, (GLuint)tex);
@@ -388,9 +379,22 @@ int bw_gl_quad(int prog, int tex,
   if (loc >= 0) glUniform1i(loc, 0);
   glBindVertexArray(g_vao);
   glBindBuffer(GL_ARRAY_BUFFER, g_vbo);
-  glBufferData(GL_ARRAY_BUFFER, sizeof v, v, GL_DYNAMIC_DRAW);
+  glBufferData(GL_ARRAY_BUFFER, 20 * (int)sizeof(float), v, GL_DYNAMIC_DRAW);
   glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
   return 1;
+}
+
+int bw_gl_quad(int prog, int tex,
+    uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1,
+    uint32_t u0, uint32_t v0, uint32_t u1, uint32_t v1) {
+  float v[20];
+  float X0 = fbits(x0), Y0 = fbits(y0), X1 = fbits(x1), Y1 = fbits(y1);
+  float U0 = fbits(u0), V0 = fbits(v0), U1 = fbits(u1), V1 = fbits(v1);
+  v[0] = X0; v[1] = Y0; v[2] = 0; v[3] = U0; v[4] = V0;
+  v[5] = X1; v[6] = Y0; v[7] = 0; v[8] = U1; v[9] = V0;
+  v[10] = X0; v[11] = Y1; v[12] = 0; v[13] = U0; v[14] = V1;
+  v[15] = X1; v[16] = Y1; v[17] = 0; v[18] = U1; v[19] = V1;
+  return bw_gl_verts(prog, tex, v);
 }
 
 int bw_gl_png(const char* path) {

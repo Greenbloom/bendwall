@@ -1,0 +1,5 @@
+{
+  "general": {"properties": {"schemecolor": {"type": "color", "value": "1 0 0"}}},
+  "file": "not-the-scene.json",
+  "type": "scene"
+}

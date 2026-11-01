@@ -28,6 +28,13 @@ export LIBGL_ALWAYS_SOFTWARE=1
 export BENDWALL_NATIVE="$PWD/host/libbendwall.so"
 ./build/kde/bendwall-preview --play-frames "$PWD/fixtures/play/video" 8 > build/preview-play.out
 python3 tools/check_preview_play.py build/preview-play.out
+python3 tools/mktexscene.py
+QT_QPA_PLATFORM=offscreen timeout 20 ./build/kde/bendwall-preview --watch-check "$PWD/fixtures/play/web" > build/watch-web.out
+python3 tools/check_watch.py build/watch-web.out web
+QT_QPA_PLATFORM=offscreen timeout 20 ./build/kde/bendwall-preview --watch-check "$PWD/fixtures/play/texscene" > build/watch-scene.out
+python3 tools/check_watch.py build/watch-scene.out scene
+QT_QPA_PLATFORM=offscreen timeout 20 ./build/kde/bendwall-preview --watch-check "$PWD/fixtures/play/video" > build/watch-video.out
+python3 tools/check_watch.py build/watch-video.out video
 if [ -d /opt/cursor/artifacts ]; then
   cp -f build/m4-grab.png /opt/cursor/artifacts/m4-preview.png
 fi

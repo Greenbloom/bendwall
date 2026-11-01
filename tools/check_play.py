@@ -41,6 +41,43 @@ if tint[0] > 40 or not (50 <= tint[1] <= 140) or tint[2] > 40:
 pack = grab(r"PACK (.*)").group(1)
 if "tint=1" not in pack or "pulse=1" not in pack:
     raise SystemExit(pack)
+orient = grab(r"ORIENT kind=(\S+) top=(\d+) (\d+) (\d+) bot=(\d+) (\d+) (\d+)")
+if orient.group(1) != "video":
+    raise SystemExit(orient.group(0))
+top = [int(orient.group(i)) for i in (2, 3, 4)]
+bot = [int(orient.group(i)) for i in (5, 6, 7)]
+if top[0] < 180 or top[1] > 80 or bot[1] < 180 or bot[0] > 80:
+    raise SystemExit(orient.group(0))
+orient2 = grab(r"ORIENT2 top=(\d+) (\d+) (\d+) bot=(\d+) (\d+) (\d+)")
+top2 = [int(orient2.group(i)) for i in (1, 2, 3)]
+bot2 = [int(orient2.group(i)) for i in (4, 5, 6)]
+if top2[1] < 180 or top2[0] > 80 or bot2[0] < 180 or bot2[1] > 80:
+    raise SystemExit(orient2.group(0))
+tex = grab(r"TEX c=(\d+) (\d+) (\d+) m=(\d+) (\d+) (\d+) far=(\d+) (\d+) (\d+) low=(\d+) (\d+) (\d+)")
+cyan = [int(tex.group(i)) for i in (1, 2, 3)]
+mag = [int(tex.group(i)) for i in (4, 5, 6)]
+far = [int(tex.group(i)) for i in (7, 8, 9)]
+low = [int(tex.group(i)) for i in (10, 11, 12)]
+if cyan[0] > 40 or cyan[1] < 200 or cyan[2] < 200:
+    raise SystemExit("cyan " + str(cyan))
+if mag[0] < 200 or mag[1] > 40 or mag[2] < 200:
+    raise SystemExit("magenta " + str(mag))
+if any(c > 20 for c in far + low):
+    raise SystemExit("outside " + str(far) + " " + str(low))
+dxt = [int(x) for x in grab(r"DXT (\d+) (\d+) (\d+)").groups()]
+if dxt[0] > 40 or dxt[1] < 200 or dxt[2] > 40:
+    raise SystemExit(f"dxt {dxt}")
+png = [int(x) for x in grab(r"PNG (\d+) (\d+) (\d+)").groups()]
+if png[0] < 200 or png[1] > 40 or png[2] > 40:
+    raise SystemExit(f"png {png}")
+miss = grab(r"MISS miss=(\d+) varied=(\d+)")
+if int(miss.group(1)) < 1 or miss.group(2) != "1":
+    raise SystemExit(miss.group(0))
+if len(sys.argv) < 3:
+    raise SystemExit("need stderr")
+err = pathlib.Path(sys.argv[2]).read_text()
+if "bendwall: missing texture" not in err:
+    raise SystemExit(err)
 if "PLAYMAIN ok" not in text:
     raise SystemExit(text)
 print("PLAY PASS")

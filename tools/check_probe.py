@@ -3,7 +3,7 @@
 import pathlib, sys
 got = [ln.strip() for ln in pathlib.Path(sys.argv[1]).read_text().splitlines() if ln.strip()]
 want = [
-    "10 loaded",
+    "10 partial texture",
     "11 partial particle",
     "12 unsupported application",
     "13 loaded",
@@ -12,16 +12,16 @@ want = [
     "16 unsupported scene",
     "18 unsupported video",
     "19 partial model",
-    "20 loaded",
-    "21 loaded",
+    "20 partial texture",
+    "21 partial texture",
     "22 loaded",
     "23 partial particle",
-    "24 loaded",
+    "24 partial texture",
     "26 loaded",
-    "30 loaded",
-    "31 loaded",
-    "32 loaded",
-    "33 loaded",
+    "30 partial texture",
+    "31 partial texture",
+    "32 partial texture",
+    "33 partial texture",
 ]
 if got != want:
     print("GOT")

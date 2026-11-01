@@ -3,17 +3,22 @@
 
 #include <QColor>
 #include <QCoreApplication>
+#include <QDir>
 #include <QElapsedTimer>
+#include <QEventLoop>
+#include <QFile>
+#include <QFileInfo>
 #include <QFont>
 #include <QGuiApplication>
 #include <QImage>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QPainter>
 #include <QPaintEvent>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQmlError>
 #include <QQuickWindow>
-#include <QRasterWindow>
 #include <QRect>
 #include <QTimer>
 #include <QUrl>
@@ -150,74 +155,101 @@ static int playFrames(const QString& dir, int bench) {
     if (elapsed < 1) elapsed = 1;
     const double fps = n * 1000.0 / (double)elapsed;
     const double cpu = bendwallCpuPercent(t0, bendwallProcTicks(), elapsed);
-    std::printf("PLAY fps=%.1f cpu=%.1f size=%dx%d %s\n", fps, cpu, bw, bh,
-                eng.line().toUtf8().constData());
+    const QByteArray fpsText = bendwallFixed1(fps).toLatin1();
+    const QByteArray cpuText = bendwallFixed1(cpu).toLatin1();
+    const QByteArray line = eng.line().toUtf8();
+    std::printf("PLAY fps=%s cpu=%s size=%dx%d %s\n", fpsText.constData(), cpuText.constData(),
+                bw, bh, line.constData());
     eng.close();
     return diff ? 0 : 1;
 }
 
-class Watch final : public QRasterWindow {
-public:
-    explicit Watch(const QString& dir) {
-        resize(960, 540);
-        setTitle(QStringLiteral("Bendwall"));
-        m_eng.setAudio(constantAudio());
-        if (!m_eng.open(dir, 960, 540)) m_hud = m_eng.error();
-        else m_img = m_eng.image();
-        connect(&m_timer, &QTimer::timeout, this, [this] { tick(); });
-        m_timer.start(33);
-        m_clock.start();
-        m_ticks = bendwallProcTicks();
-    }
+static QString topType(const QString& dir) {
+    QFile file(QDir(dir).filePath(QStringLiteral("project.json")));
+    if (!file.open(QIODevice::ReadOnly)) return QStringLiteral("scene");
+    const QJsonObject obj = QJsonDocument::fromJson(file.readAll()).object();
+    const QString type = obj.value(QStringLiteral("type")).toString().trimmed().toLower();
+    return type.isEmpty() ? QStringLiteral("scene") : type;
+}
 
-protected:
-    void paintEvent(QPaintEvent*) override {
-        QPainter painter(this);
-        painter.fillRect(0, 0, width(), height(), QColor(18, 20, 24));
-        if (!m_img.isNull()) painter.drawImage(QRect(0, 0, width(), height()), m_img);
-        painter.setPen(Qt::NoPen);
-        painter.setBrush(QColor(0, 0, 0, 160));
-        painter.drawRoundedRect(QRectF(12, 12, 320, 36), 6, 6);
-        painter.setPen(QColor(232, 230, 227));
-        QFont font = painter.font();
-        font.setPixelSize(16);
-        painter.setFont(font);
-        painter.drawText(QRectF(24, 12, 296, 36), Qt::AlignVCenter, m_hud);
+static QString watchQmlPath() {
+    const QString app = QCoreApplication::applicationDirPath();
+    const QStringList cands = {
+        app + QStringLiteral("/../../kde/watch.qml"),
+        app + QStringLiteral("/watch.qml"),
+        QStringLiteral("kde/watch.qml"),
+    };
+    for (const QString& cand : cands) {
+        if (QFile::exists(cand)) return QFileInfo(cand).absoluteFilePath();
     }
+    return {};
+}
 
-private:
-    void tick() {
-        if (m_eng.ready()) {
-            m_eng.step(33);
-            m_img = m_eng.image();
+static void addImports(QQmlApplicationEngine* engine) {
+    engine->addImportPath(QCoreApplication::applicationDirPath());
+    engine->addImportPath(QDir::homePath() + QStringLiteral("/.local/lib/qt6/qml"));
+    const QByteArray extra = qgetenv("QML_IMPORT_PATH");
+    const QList<QByteArray> parts = extra.split(':');
+    for (const QByteArray& part : parts) {
+        if (!part.isEmpty()) engine->addImportPath(QString::fromLocal8Bit(part));
+    }
+}
+
+/* The window is the Plasma page: main.qml, then WebLayer when the item is web. */
+static int loadWatch(QQmlApplicationEngine* engine, QList<QQmlError>* errs, const QString& dir) {
+    const QString qml = watchQmlPath();
+    if (qml.isEmpty()) {
+        std::cerr << "watch.qml not found\n";
+        return 1;
+    }
+    QObject::connect(engine, &QQmlApplicationEngine::warnings,
+                     [errs](const QList<QQmlError>& w) { if (errs) *errs += w; });
+    addImports(engine);
+    const QString abs = QFileInfo(dir).absoluteFilePath();
+    engine->rootContext()->setContextProperty(QStringLiteral("wallpaperDir"), abs);
+    engine->rootContext()->setContextProperty(QStringLiteral("wallpaperKind"), topType(abs));
+    engine->load(QUrl::fromLocalFile(qml));
+    if (engine->rootObjects().isEmpty()) {
+        if (errs) {
+            for (const QQmlError& err : *errs)
+                std::cerr << err.toString().toStdString() << "\n";
         }
-        m_frames++;
-        if (m_clock.elapsed() >= 500) {
-            const long ms = m_clock.elapsed();
-            const long now = bendwallProcTicks();
-            const double fps = m_frames * 1000.0 / (double)ms;
-            const double cpu = bendwallCpuPercent(m_ticks, now, ms);
-            m_hud = QString("%1 fps   %2% cpu   %3")
-                        .arg(fps, 0, 'f', 1)
-                        .arg(cpu, 0, 'f', 1)
-                        .arg(m_eng.kind());
-            std::printf("PLAY fps=%.1f cpu=%.1f %s\n", fps, cpu, m_eng.line().toUtf8().constData());
-            m_frames = 0;
-            m_ticks = now;
-            m_clock.restart();
-        }
-        if (m_hud.isEmpty()) m_hud = QStringLiteral("measuring");
-        update();
+        return 1;
     }
+    auto* window = qobject_cast<QQuickWindow*>(engine->rootObjects().first());
+    if (!window) return 1;
+    window->resize(960, 540);
+    window->show();
+    return 0;
+}
 
-    Engine m_eng;
-    QImage m_img;
-    QString m_hud = QStringLiteral("measuring");
-    QTimer m_timer;
-    QElapsedTimer m_clock;
-    int m_frames = 0;
-    long m_ticks = 0;
-};
+static int watchCheck(const QString& dir) {
+    QQmlApplicationEngine engine;
+    QList<QQmlError> errs;
+    if (loadWatch(&engine, &errs, dir)) return 1;
+    QEventLoop loop;
+    QTimer::singleShot(1200, &loop, &QEventLoop::quit);
+    loop.exec();
+    QObject* root = engine.rootObjects().first();
+    QObject* frame = root->findChild<QObject*>(QStringLiteral("bendwallFrame"));
+    QObject* loader = root->findChild<QObject*>(QStringLiteral("bendwallWeb"));
+    QString kind = frame ? frame->property("kind").toString() : QString();
+    if (kind.isEmpty()) {
+        QTimer::singleShot(800, &loop, &QEventLoop::quit);
+        loop.exec();
+        kind = frame ? frame->property("kind").toString() : QString();
+    }
+    const QString page = frame ? frame->property("pageUrl").toString() : QString();
+    const int status = loader ? loader->property("status").toInt() : -1;
+    const QByteArray kindB = kind.toUtf8();
+    const QByteArray pageB = page.toUtf8();
+    std::printf("WATCH kind=%s loader=%d page=%s\n", kindB.constData(), status, pageB.constData());
+    for (const QQmlError& err : errs) {
+        const QByteArray line = err.toString().toUtf8();
+        std::printf("WATCHWARN %s\n", line.constData());
+    }
+    return kind.isEmpty() ? 1 : 0;
+}
 
 int main(int argc, char** argv) {
     const std::string cmd = argc > 1 ? argv[1] : "";
@@ -242,15 +274,21 @@ int main(int argc, char** argv) {
     }
     if (cmd == "--watch" && argc >= 3) {
         QGuiApplication app(argc, argv);
-        Watch window(QString::fromLocal8Bit(argv[2]));
-        window.show();
+        QQmlApplicationEngine engine;
+        QList<QQmlError> errs;
+        if (loadWatch(&engine, &errs, QString::fromLocal8Bit(argv[2]))) return 1;
         return app.exec();
+    }
+    if (cmd == "--watch-check" && argc >= 3) {
+        QGuiApplication app(argc, argv);
+        return watchCheck(QString::fromLocal8Bit(argv[2]));
     }
     std::cerr << "usage:\n"
               << "  bendwall-preview --dump-props <project.json>\n"
               << "  bendwall-preview --dump-workshop <workshop-root>\n"
               << "  bendwall-preview --grab <qml> <frame.png> <project.json> <workshop> <out.png> <qml-import-path>\n"
               << "  bendwall-preview --play-frames <item-dir> [frames]\n"
-              << "  bendwall-preview --watch <item-dir>\n";
+              << "  bendwall-preview --watch <item-dir>\n"
+              << "  bendwall-preview --watch-check <item-dir>\n";
     return 2;
 }

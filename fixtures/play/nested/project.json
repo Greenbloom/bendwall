@@ -1,0 +1,6 @@
+{
+  "general": {"properties": {"schemecolor": {"type": "color", "file": "nested-not-a-video.mp4", "title": "Nested title", "value": "1 0 0"}}},
+  "file": "clip.mkv",
+  "title": "Night drive",
+  "type": "video"
+}

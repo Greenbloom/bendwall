@@ -402,21 +402,58 @@ def dpath.m(root: String, dep: String, e: Bool) -> String:
       root ++ "/" ++ dep ++ "/project.json"
 
 @unsafe
-def scene_feat(j: Job, feat: String) -> String:
+def scene_feat(j: Job, feat: String) -> IO(String):
   scene_feat.e(j, Scn.empty(feat))
 
 @unsafe
-def scene_feat.e(j: Job, p: Bool & String) -> String:
+def scene_feat.e(j: Job, p: Bool & String) -> IO(String):
   (e, feat) = p
   scene_feat.m(j, feat, e)
 
 @unsafe
-def scene_feat.m(j: Job, feat: String, e: Bool) -> String:
+def scene_feat.m(j: Job, feat: String, e: Bool) -> IO(String):
   match e:
     case True{}:
-      line_loaded(j)
+      picture_line(j)
     case False{}:
-      line_pf(j, "partial", feat)
+      scene_feat.part(j, feat)
+
+@unsafe
+def scene_feat.part(j: Job, feat: String) -> IO(String):
+  do IO<String>:
+    return line_pf(j, "partial", feat)
+
+@unsafe
+def picture_line(j: Job) -> IO(String):
+  picture_line.d(dup_job(j))
+
+@unsafe
+def picture_line.d(p: Job & Job) -> IO(String):
+  (a, b) = p
+  picture_line.p(b, paths_of(a))
+
+@unsafe
+def picture_line.p(j: Job, p: String & String & String) -> IO(String):
+  (dir, assets, file) = p
+  picture_line.q(j, dir, assets, Vfs.drop_s(file))
+
+@unsafe
+def picture_line.q(j: Job, dir: String, assets: String, +n: U32) -> IO(String):
+  do IO<String>:
+    r : U32 <- Av.scene_ready(dir, assets)
+    return picture_line.s(j, r)
+
+@unsafe
+def picture_line.s(j: Job, +n: U32) -> String:
+  picture_line.z(j, U32.is_zero(n))
+
+@unsafe
+def picture_line.z(j: Job, z: Bool) -> String:
+  match z:
+    case True{}:
+      line_pf(j, "partial", "texture")
+    case False{}:
+      line_loaded(j)
 
 @unsafe
 def paths_of(j: Job) -> String & String & String:
@@ -424,21 +461,26 @@ def paths_of(j: Job) -> String & String & String:
   (dir, assets, file)
 
 @unsafe
-def scene_use(j: Job, src: String) -> String:
+def scene_use(j: Job, src: String) -> IO(String):
   scene_use.e(j, Scn.empty(src))
 
 @unsafe
-def scene_use.e(j: Job, p: Bool & String) -> String:
+def scene_use.e(j: Job, p: Bool & String) -> IO(String):
   (e, src) = p
   scene_use.m(j, src, e)
 
 @unsafe
-def scene_use.m(j: Job, src: String, e: Bool) -> String:
+def scene_use.m(j: Job, src: String, e: Bool) -> IO(String):
   match e:
     case True{}:
-      line_pf(j, "unsupported", "scene")
+      scene_use.bad(j)
     case False{}:
       scene_feat(j, Gaps.report(src))
+
+@unsafe
+def scene_use.bad(j: Job) -> IO(String):
+  do IO<String>:
+    return line_pf(j, "unsupported", "scene")
 
 @unsafe
 def scene_status(j: Job) -> IO(String):
@@ -454,7 +496,8 @@ def scene_status.a(j: Job, p: String & String & String) -> IO(String):
   (dir, assets, file) = p
   do IO<String>:
     src : String <- Vfs.scene_text(dir, assets, file)
-    return scene_use(j, src)
+    s : String <- scene_use(j, src)
+    return s
 
 @unsafe
 def play.s(j: Job, +n: U32) -> String:

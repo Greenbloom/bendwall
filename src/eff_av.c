@@ -10,6 +10,7 @@ static void* bw_av_so;
 static int (*bw_cap)(float*, int);
 static int (*bw_vid)(const char*);
 static int (*bw_vtex)(const char*, int);
+static int (*bw_ready)(const char*, const char*);
 
 static void bw_av_load(void) {
   const char* p;
@@ -21,6 +22,7 @@ static void bw_av_load(void) {
   bw_cap = (int (*)(float*, int))dlsym(bw_av_so, "bw_audio_capture");
   bw_vid = (int (*)(const char*))dlsym(bw_av_so, "bw_video_ok");
   bw_vtex = (int (*)(const char*, int))dlsym(bw_av_so, "bw_video_tex");
+  bw_ready = (int (*)(const char*, const char*))dlsym(bw_av_so, "bw_scene_ready");
 }
 
 Term av_cap_run(Env e, Term* f, IoWork* w) {
@@ -58,6 +60,21 @@ Term av_tex_run(Env e, Term* f, IoWork* w) {
   return (Term)(uint32_t)r;
 }
 
+Term scene_ready_run(Env e, Term* f, IoWork* w) {
+  char* dir;
+  char* assets;
+  u64 n = 0, m = 0;
+  int r;
+  (void)w;
+  bw_av_load();
+  dir = io_cstr(e, f[0], &n);
+  assets = io_cstr(e, f[1], &m);
+  r = (bw_ready && dir) ? bw_ready(dir, assets ? assets : "") : 0;
+  free(dir);
+  free(assets);
+  return (Term)(uint32_t)r;
+}
+
 #endif
 
 #ifdef CID(av_cap)
@@ -68,4 +85,7 @@ static void __attribute__((constructor)) av_video_use(void) { io_eff(CID(av_vide
 #endif
 #ifdef CID(av_tex)
 static void __attribute__((constructor)) av_tex_use(void) { io_eff(CID(av_tex), av_tex_run); }
+#endif
+#ifdef CID(scene_ready)
+static void __attribute__((constructor)) scene_ready_use(void) { io_eff(CID(scene_ready), scene_ready_run); }
 #endif

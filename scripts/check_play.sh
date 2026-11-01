@@ -8,6 +8,7 @@ scripts/lib.sh
 cc -O2 -o build/playmain host/playmain.c -Ihost \
   "$PWD/host/libbendwall.so" -Wl,-rpath,"$PWD/host" -lm
 mkdir -p build
-./build/playmain fixtures/play > build/play.out
-python3 tools/check_play.py build/play.out
+python3 tools/mktexscene.py
+./build/playmain fixtures/play > build/play.out 2> build/play.err
+python3 tools/check_play.py build/play.out build/play.err
 echo PLAY PASS

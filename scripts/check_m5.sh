@@ -72,4 +72,7 @@ bend t_pkgmid.bend -o build/pkgmid
 ./build/pkgmid > build/pkgmid.out
 python3 tools/check_m3.py build/pkgmid.out build/pkgmid.png
 scripts/check_play.sh
+bend t_root.bend -o build/root
+./build/root > build/root.out
+python3 tools/check_root.py build/root.out
 echo M5 PASS

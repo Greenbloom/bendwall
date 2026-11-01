@@ -1,21 +1,19 @@
 /* Scene image for the desktop. Bend still plans the headless 32x32 proof.
    This process keeps the video decoder and the GL context open, draws the
    picture and the text bitmap, then runs the built-in passes. */
+#include "plan.h"
 #include "player.h"
 
 #include <ctype.h>
-#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <jpeglib.h>
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/imgutils.h>
 #include <libswscale/swscale.h>
 #include <math.h>
 #include <png.h>
-#include <setjmp.h>
 
 #define GL_GLEXT_PROTOTYPES 1
 #include <GL/gl.h>
@@ -31,6 +29,7 @@ int bw_gl_prog(const char* vs, const char* fs);
 int bw_gl_quad(int prog, int tex,
     uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1,
     uint32_t u0, uint32_t v0, uint32_t u1, uint32_t v1);
+int bw_gl_verts(int prog, int tex, const float* xyuv);
 int bw_gl_image(int tex, int w, int h, const uint8_t* px, int n);
 int bw_gl_f1(int prog, const char* name, uint32_t bits);
 int bw_gl_fvn(int prog, const char* name, const float* v, int count);
@@ -52,8 +51,9 @@ static const char* k_copy =
   "#version 330 core\n"
   "in vec2 v;\n"
   "uniform sampler2D g_Texture0;\n"
+  "uniform float g_Alpha;\n"
   "out vec4 fragColor;\n"
-  "void main(){ fragColor = texture(g_Texture0, v); }\n";
+  "void main(){ vec4 c = texture(g_Texture0, v); c.a *= g_Alpha; fragColor = c; }\n";
 
 typedef struct Vid {
   AVFormatContext* fmt;
@@ -74,17 +74,28 @@ typedef struct Vid {
 static Vid g_vid;
 static int g_w, g_h, g_gl, g_open;
 static int g_copy_prog, g_fx_prog;
-static int g_tex, g_text_tex, g_white;
+static int g_tex, g_text_tex, g_white, g_checker;
 static int g_text_w, g_text_h;
+static float g_scene_w, g_scene_h;
+static char g_dir[1100];
+#define MAXL 32
+typedef struct Live {
+  int tex;
+  float cx, cy, lw, lh, deg, alpha;
+  int full;
+} Live;
+static Live g_live[MAXL];
+static int g_nlive;
+static int g_miss;
 static uint8_t* g_px;
 static int g_time_ms;
 static int g_uni;
 static int g_scroll, g_spin, g_opacity, g_colorkey, g_tint, g_pulse;
-static int g_has_text, g_has_video, g_has_image;
+static int g_has_text, g_has_video, g_has_image, g_text_layer;
 static char g_text[160];
-static char g_page[1024];
+static char g_page[1100];
 static char g_kind[16];
-static char g_line[512];
+static char g_line[640];
 static float g_b16l[16], g_b16r[16], g_b32l[32], g_b32r[32], g_b64l[64], g_b64r[64];
 static float g_web[128];
 
@@ -94,282 +105,6 @@ static uint32_t fbits(float f) {
   return u;
 }
 
-static uint32_t ru32(const unsigned char* p) {
-  return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
-}
-
-static int ends_with(const char* s, const char* ext) {
-  size_t n, e;
-  if (!s || !ext) return 0;
-  n = strlen(s);
-  e = strlen(ext);
-  if (n < e) return 0;
-  return strcasecmp(s + n - e, ext) == 0;
-}
-
-static void slash(char* s) {
-  for (; s && *s; s++) if (*s == '\\') *s = '/';
-}
-
-static char* read_text(const char* path, int cap, int* n_out) {
-  FILE* f;
-  char* b;
-  int n;
-  f = fopen(path, "rb");
-  if (!f) return NULL;
-  b = (char*)malloc((size_t)cap + 1);
-  if (!b) { fclose(f); return NULL; }
-  n = (int)fread(b, 1, (size_t)cap, f);
-  fclose(f);
-  b[n] = 0;
-  if (n_out) *n_out = n;
-  return b;
-}
-
-static int pkg_extract(const char* path, const char* want, char** out) {
-  FILE* f;
-  unsigned char hdr[8];
-  uint32_t magic_len, count, i;
-  uint32_t found_off = 0, found_sz = 0;
-  int found = 0;
-  long start;
-  char* buf;
-  if (!path || !want || !out) return 0;
-  *out = NULL;
-  f = fopen(path, "rb");
-  if (!f) return 0;
-  if (fread(hdr, 1, 4, f) != 4) goto fail;
-  magic_len = ru32(hdr);
-  if (magic_len < 4 || magic_len > 8) goto fail;
-  if (fread(hdr, 1, magic_len, f) != magic_len) goto fail;
-  if (memcmp(hdr, "PKGV", 4) != 0) goto fail;
-  if (fread(hdr, 1, 4, f) != 4) goto fail;
-  count = ru32(hdr);
-  if (count > 100000) goto fail;
-  for (i = 0; i < count; i++) {
-    uint32_t nl, off, sz;
-    char* name;
-    if (fread(hdr, 1, 4, f) != 4) goto fail;
-    nl = ru32(hdr);
-    if (nl > 1000000) goto fail;
-    name = (char*)malloc((size_t)nl + 1);
-    if (!name) goto fail;
-    if (nl && fread(name, 1, nl, f) != nl) { free(name); goto fail; }
-    name[nl] = 0;
-    if (fread(hdr, 1, 8, f) != 8) { free(name); goto fail; }
-    off = ru32(hdr);
-    sz = ru32(hdr + 4);
-    if (!found && nl > 0 && strcasecmp(name, want) == 0) {
-      found = 1;
-      found_off = off;
-      found_sz = sz;
-    }
-    free(name);
-  }
-  start = ftell(f);
-  if (!found || found_sz < 1 || found_sz > 2000000) goto fail;
-  if (fseek(f, start + (long)found_off, SEEK_SET) != 0) goto fail;
-  buf = (char*)malloc((size_t)found_sz + 1);
-  if (!buf) goto fail;
-  if (fread(buf, 1, found_sz, f) != found_sz) { free(buf); goto fail; }
-  buf[found_sz] = 0;
-  fclose(f);
-  *out = buf;
-  return 1;
-fail:
-  fclose(f);
-  return 0;
-}
-
-static int key_string(const char* json, const char* key, char* out, int cap) {
-  char pat[96];
-  const char* p;
-  int i;
-  if (!json || !key || !out || cap < 2) return 0;
-  snprintf(pat, sizeof pat, "\"%s\"", key);
-  p = json;
-  while ((p = strstr(p, pat)) != NULL) {
-    p += strlen(pat);
-    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
-    if (*p != ':') continue;
-    p++;
-    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
-    if (*p != '"') continue;
-    p++;
-    i = 0;
-    while (*p && *p != '"' && i + 1 < cap) {
-      if (*p == '\\' && p[1]) p++;
-      out[i++] = *p++;
-    }
-    out[i] = 0;
-    slash(out);
-    return 1;
-  }
-  return 0;
-}
-
-static int quoted_ext(const char* json, const char* ext, char* out, int cap) {
-  const char* p = json;
-  if (!json) return 0;
-  while ((p = strchr(p, '"')) != NULL) {
-    const char* e;
-    int n;
-    p++;
-    e = strchr(p, '"');
-    if (!e) return 0;
-    n = (int)(e - p);
-    if (n > 1 && n < cap) {
-      char tmp[1024];
-      if (n < (int)sizeof tmp) {
-        memcpy(tmp, p, (size_t)n);
-        tmp[n] = 0;
-        if (ends_with(tmp, ext)) {
-          memcpy(out, tmp, (size_t)n + 1);
-          slash(out);
-          return 1;
-        }
-      }
-    }
-    p = e + 1;
-  }
-  return 0;
-}
-
-static void note_effect(const char* name) {
-  if (!strcmp(name, "scroll")) g_scroll = 1;
-  else if (!strcmp(name, "spin")) g_spin = 1;
-  else if (!strcmp(name, "opacity")) g_opacity = 1;
-  else if (!strcmp(name, "colorkey")) g_colorkey = 1;
-  else if (!strcmp(name, "tint")) g_tint = 1;
-  else if (!strcmp(name, "pulse")) g_pulse = 1;
-}
-
-static void scan_effects(const char* json) {
-  const char* p = json;
-  if (!json) return;
-  while ((p = strstr(p, "effects/")) != NULL) {
-    char name[64];
-    int i = 0;
-    p += 8;
-    while (*p && *p != '/' && *p != '"' && *p != ' ' && i < 63) name[i++] = (char)tolower((unsigned char)*p++);
-    name[i] = 0;
-    note_effect(name);
-  }
-}
-
-static int load_scene(const char* dir, const char* file_field, char** out) {
-  char path[1100];
-  const char* names[4];
-  int n = 0, i;
-  if (file_field && strstr(file_field, ".json")) names[n++] = file_field;
-  names[n++] = "scene.json";
-  names[n++] = "gifscene.json";
-  for (i = 0; i < n; i++) {
-    snprintf(path, sizeof path, "%s/%s", dir, names[i]);
-    *out = read_text(path, 2000000, NULL);
-    if (*out) return 1;
-  }
-  snprintf(path, sizeof path, "%s/scene.pkg", dir);
-  if (pkg_extract(path, "scene.json", out)) return 1;
-  snprintf(path, sizeof path, "%s/gifscene.pkg", dir);
-  if (pkg_extract(path, "gifscene.json", out)) return 1;
-  if (file_field && file_field[0]) {
-    snprintf(path, sizeof path, "%s/scene.pkg", dir);
-    if (pkg_extract(path, file_field, out)) return 1;
-  }
-  return 0;
-}
-
-struct jerr_s {
-  struct jpeg_error_mgr pub;
-  jmp_buf jb;
-};
-
-static void jerr_exit(j_common_ptr c) {
-  struct jerr_s* e = (struct jerr_s*)c->err;
-  longjmp(e->jb, 1);
-}
-
-static int load_jpeg(const char* path, int* w, int* h, uint8_t** rgba) {
-  FILE* fp;
-  struct jpeg_decompress_struct cinfo;
-  struct jerr_s jerr;
-  uint8_t* out = NULL;
-  int y, x, comps;
-  fp = fopen(path, "rb");
-  if (!fp) return 0;
-  cinfo.err = jpeg_std_error(&jerr.pub);
-  jerr.pub.error_exit = jerr_exit;
-  if (setjmp(jerr.jb)) {
-    jpeg_destroy_decompress(&cinfo);
-    fclose(fp);
-    free(out);
-    return 0;
-  }
-  jpeg_create_decompress(&cinfo);
-  jpeg_stdio_src(&cinfo, fp);
-  jpeg_read_header(&cinfo, TRUE);
-  cinfo.out_color_space = JCS_RGB;
-  jpeg_start_decompress(&cinfo);
-  *w = (int)cinfo.output_width;
-  *h = (int)cinfo.output_height;
-  comps = (int)cinfo.output_components;
-  if (*w < 1 || *h < 1 || *w > 8192 || *h > 8192 || comps < 3) {
-    jpeg_destroy_decompress(&cinfo);
-    fclose(fp);
-    return 0;
-  }
-  out = (uint8_t*)malloc((size_t)(*w) * (size_t)(*h) * 4);
-  if (!out) { jpeg_destroy_decompress(&cinfo); fclose(fp); return 0; }
-  while ((int)cinfo.output_scanline < *h) {
-    uint8_t row[8192 * 3];
-    uint8_t* rp = row;
-    JSAMPROW rows[1];
-    int yy = (int)cinfo.output_scanline;
-    rows[0] = row;
-    if (*w > 8192) break;
-    jpeg_read_scanlines(&cinfo, rows, 1);
-    for (x = 0; x < *w; x++) {
-      uint8_t* d = out + ((size_t)yy * (size_t)(*w) + (size_t)x) * 4;
-      d[0] = rp[x * comps];
-      d[1] = rp[x * comps + 1];
-      d[2] = rp[x * comps + 2];
-      d[3] = 255;
-    }
-    (void)y;
-  }
-  jpeg_finish_decompress(&cinfo);
-  jpeg_destroy_decompress(&cinfo);
-  fclose(fp);
-  *rgba = out;
-  return 1;
-}
-
-static int load_png(const char* path, int* w, int* h, uint8_t** rgba) {
-  png_image image;
-  memset(&image, 0, sizeof image);
-  image.version = PNG_IMAGE_VERSION;
-  if (!png_image_begin_read_from_file(&image, path)) return 0;
-  image.format = PNG_FORMAT_RGBA;
-  *w = (int)image.width;
-  *h = (int)image.height;
-  if (*w < 1 || *h < 1 || *w > 8192 || *h > 8192) { png_image_free(&image); return 0; }
-  *rgba = (uint8_t*)malloc((size_t)(*w) * (size_t)(*h) * 4);
-  if (!*rgba || !png_image_finish_read(&image, NULL, *rgba, 0, NULL)) {
-    free(*rgba);
-    *rgba = NULL;
-    png_image_free(&image);
-    return 0;
-  }
-  png_image_free(&image);
-  return 1;
-}
-
-static int load_image(const char* path, int* w, int* h, uint8_t** rgba) {
-  if (ends_with(path, ".png")) return load_png(path, w, h, rgba);
-  if (ends_with(path, ".jpg") || ends_with(path, ".jpeg")) return load_jpeg(path, w, h, rgba);
-  return 0;
-}
 
 static void vid_close(void) {
   if (g_vid.sws) sws_freeContext(g_vid.sws);
@@ -551,15 +286,66 @@ static void spectrum_update(void) {
   memcpy(g_web + 64, g_b64r, sizeof g_b64r);
 }
 
-static int draw_quad(int prog, int tex, int x, int y, int w, int h) {
+static int draw_quad(int prog, int tex, int x, int y, int w, int h, float alpha) {
   float x0, y0, x1, y1;
   if (w < 1 || h < 1 || tex <= 0) return 0;
+  bw_gl_f1(prog, "g_Alpha", fbits(alpha));
   x0 = (float)x / (float)g_w * 2.f - 1.f;
   x1 = (float)(x + w) / (float)g_w * 2.f - 1.f;
   y0 = 1.f - (float)y / (float)g_h * 2.f;
   y1 = 1.f - (float)(y + h) / (float)g_h * 2.f;
   return bw_gl_quad(prog, tex, fbits(x0), fbits(y0), fbits(x1), fbits(y1),
                     fbits(0.f), fbits(0.f), fbits(1.f), fbits(1.f));
+}
+
+/* y is top-down scene pixels. Positive degrees rotate clockwise on screen. */
+static int draw_live(int prog, const Live* L) {
+  float x, y, w, h, cx, cy, hx, hy, rad, c, s;
+  float v[20];
+  float uvs[4][2] = {{0, 0}, {1, 0}, {0, 1}, {1, 1}};
+  float corners[4][2];
+  int i;
+  if (L->tex <= 0) return 0;
+  if (L->full || L->lw < 1.f || L->lh < 1.f) {
+    x = 0;
+    y = 0;
+    w = (float)g_w;
+    h = (float)g_h;
+  } else {
+    float sw = g_scene_w > 1.f ? g_scene_w : (float)g_w;
+    float sh = g_scene_h > 1.f ? g_scene_h : (float)g_h;
+    float cover = sw > 0 && sh > 0 ? fmaxf((float)g_w / sw, (float)g_h / sh) : 1.f;
+    float ox = ((float)g_w - sw * cover) * 0.5f;
+    float oy = ((float)g_h - sh * cover) * 0.5f;
+    w = L->lw * cover;
+    h = L->lh * cover;
+    x = ox + L->cx * cover - w * 0.5f;
+    y = oy + L->cy * cover - h * 0.5f;
+  }
+  bw_gl_f1(prog, "g_Alpha", fbits(L->alpha <= 0 ? 1.f : L->alpha));
+  cx = x + w * 0.5f;
+  cy = y + h * 0.5f;
+  hx = w * 0.5f;
+  hy = h * 0.5f;
+  rad = L->deg * 0.01745329251f;
+  c = cosf(rad);
+  s = sinf(rad);
+  corners[0][0] = -hx; corners[0][1] = -hy;
+  corners[1][0] = hx; corners[1][1] = -hy;
+  corners[2][0] = -hx; corners[2][1] = hy;
+  corners[3][0] = hx; corners[3][1] = hy;
+  for (i = 0; i < 4; i++) {
+    float lx = corners[i][0] * c - corners[i][1] * s;
+    float ly = corners[i][0] * s + corners[i][1] * c;
+    float px = cx + lx;
+    float py = cy + ly;
+    v[i * 5] = px / (float)g_w * 2.f - 1.f;
+    v[i * 5 + 1] = 1.f - py / (float)g_h * 2.f;
+    v[i * 5 + 2] = 0;
+    v[i * 5 + 3] = uvs[i][0];
+    v[i * 5 + 4] = uvs[i][1];
+  }
+  return bw_gl_verts(prog, L->tex, v);
 }
 
 static int upload_arr(int prog, const char* name, const float* v, int n) {
@@ -618,35 +404,26 @@ static int ensure_fx(void) {
   return g_fx_prog > 0;
 }
 
-static int make_solid(int r, int g, int b) {
-  uint8_t px[4];
-  px[0] = (uint8_t)r;
-  px[1] = (uint8_t)g;
-  px[2] = (uint8_t)b;
-  px[3] = 255;
-  g_tex = bw_gl_image(g_tex, 1, 1, px, 4);
-  return g_tex > 0;
-}
-
-static int make_checker(void) {
+static int ensure_checker(void) {
   enum { N = 32 };
   uint8_t* px;
   int x, y;
+  if (g_checker > 0) return g_checker;
   px = (uint8_t*)malloc(N * N * 4);
   if (!px) return 0;
   for (y = 0; y < N; y++) {
     for (x = 0; x < N; x++) {
       int on = ((x / 8) ^ (y / 8)) & 1;
       uint8_t* p = px + (y * N + x) * 4;
-      p[0] = on ? 20 : 220;
-      p[1] = on ? 180 : 40;
+      p[0] = (uint8_t)(on ? 20 : 220);
+      p[1] = (uint8_t)(on ? 180 : 40);
       p[2] = 36;
       p[3] = 255;
     }
   }
-  g_tex = bw_gl_image(g_tex, N, N, px, N * N * 4);
+  g_checker = bw_gl_image(0, N, N, px, N * N * 4);
   free(px);
-  return g_tex > 0;
+  return g_checker;
 }
 
 static void upload_picture(void) {
@@ -668,26 +445,40 @@ static int draw(void) {
   if (!g_copy_prog) g_copy_prog = bw_gl_prog(k_vs, k_copy);
   if (!ensure_fx() || !g_copy_prog) { bw_gl_end(); return 0; }
   upload_picture();
-  if (g_tex <= 0) {
-    if (g_scroll || g_spin || strcmp(g_kind, "demo") == 0) make_checker();
-    else make_solid(220, 48, 32);
-  }
   if (!bw_gl_bind(1) || !bw_gl_clear()) { bw_gl_end(); return 0; }
-  draw_quad(g_copy_prog, g_tex, 0, 0, g_w, g_h);
+  if (g_has_video && g_tex > 0) {
+    draw_quad(g_copy_prog, g_tex, 0, 0, g_w, g_h, 1.f);
+  } else if (g_nlive > 0) {
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    for (i = 0; i < g_nlive; i++) draw_live(g_copy_prog, &g_live[i]);
+    glDisable(GL_BLEND);
+  } else {
+    if (g_dir[0] && strcmp(g_kind, "web") != 0 && strcmp(g_kind, "demo") != 0 && !g_text_layer)
+      fprintf(stderr, "bendwall: no picture in %s\n", g_dir);
+    if (ensure_checker() > 0) draw_quad(g_copy_prog, g_checker, 0, 0, g_w, g_h, 1.f);
+  }
   if (!bw_gl_bind(0) || !bw_gl_clear()) { bw_gl_end(); return 0; }
   bw_gl_f1(g_fx_prog, "g_Time", fbits((float)g_time_ms / 1000.f));
   bands[0] = g_b16l; bands[1] = g_b16r; bands[2] = g_b32l;
   bands[3] = g_b32r; bands[4] = g_b64l; bands[5] = g_b64r;
   g_uni = 0;
   for (i = 0; i < 6; i++) if (upload_arr(g_fx_prog, names[i], bands[i], counts[i])) g_uni++;
-  draw_quad(g_fx_prog, bw_gl_tex(1), 0, 0, g_w, g_h);
+  /* The picture was drawn with v=0 at the top of FBO 1. Sampling that
+     attachment with the same UVs reads the bottom row first, which flips
+     the video and the textures. The text quad is drawn after this pass. */
+  {
+    float x0 = -1.f, y0 = 1.f, x1 = 1.f, y1 = -1.f;
+    bw_gl_quad(g_fx_prog, bw_gl_tex(1), fbits(x0), fbits(y0), fbits(x1), fbits(y1),
+               fbits(0.f), fbits(1.f), fbits(1.f), fbits(0.f));
+  }
   glEnable(GL_BLEND);
   glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
   if (g_has_text && g_text_tex > 0) {
     scale = g_h / 90;
     if (scale < 1) scale = 1;
     if (scale > 8) scale = 8;
-    draw_quad(g_copy_prog, g_text_tex, 8, 8, g_text_w * scale, g_text_h * scale);
+    draw_quad(g_copy_prog, g_text_tex, 8, 8, g_text_w * scale, g_text_h * scale, 1.f);
   }
   bar_h = g_h / 10;
   if (bar_h < 4) bar_h = 4;
@@ -701,8 +492,8 @@ static int draw(void) {
     for (i = 0; i < 16; i++) {
       int lh = (int)(g_b16l[i] * (float)bar_h);
       int rh = (int)(g_b16r[i] * (float)bar_h);
-      if (lh > 0) draw_quad(g_copy_prog, g_white, i * band_w, g_h - lh, band_w, lh);
-      if (rh > 0) draw_quad(g_copy_prog, g_white, g_w / 2 + i * band_w, g_h - rh, band_w, rh);
+      if (lh > 0) draw_quad(g_copy_prog, g_white, i * band_w, g_h - lh, band_w, lh, 1.f);
+      if (rh > 0) draw_quad(g_copy_prog, g_white, g_w / 2 + i * band_w, g_h - rh, band_w, rh, 1.f);
     }
   }
   glDisable(GL_BLEND);
@@ -718,10 +509,10 @@ static int draw(void) {
 
 static void refresh_line(void) {
   snprintf(g_line, sizeof g_line,
-    "kind=%s video=%d text=%d image=%d scroll=%d spin=%d opacity=%d colorkey=%d tint=%d pulse=%d uni=%d step=%d b16=%.3f b32=%.3f b64=%.3f r16=%.3f shader=%d",
+    "kind=%s video=%d text=%d image=%d scroll=%d spin=%d opacity=%d colorkey=%d tint=%d pulse=%d uni=%d step=%d b16=%.3f b32=%.3f b64=%.3f r16=%.3f shader=%d miss=%d",
     g_kind, g_has_video, g_has_text, g_has_image, g_scroll, g_spin, g_opacity, g_colorkey,
     g_tint, g_pulse, g_uni, g_vid.frame_ms, g_b16l[0], g_b32l[0], g_b64l[0], g_b16r[0],
-    g_fx_prog > 0 ? 1 : 0);
+    g_fx_prog > 0 ? 1 : 0, g_miss);
 }
 
 static void prepare_text(void) {
@@ -738,7 +529,7 @@ static void prepare_text(void) {
 
 static void reset_plan(void) {
   g_scroll = g_spin = g_opacity = g_colorkey = g_tint = g_pulse = 0;
-  g_has_text = g_has_video = g_has_image = 0;
+  g_has_text = g_has_video = g_has_image = g_text_layer = 0;
   g_text[0] = 0;
   g_page[0] = 0;
   snprintf(g_kind, sizeof g_kind, "demo");
@@ -746,8 +537,13 @@ static void reset_plan(void) {
   g_tex = 0;
   g_text_tex = 0;
   g_white = 0;
+  g_checker = 0;
   g_copy_prog = 0;
   g_fx_prog = 0;
+  g_nlive = 0;
+  g_miss = 0;
+  g_scene_w = g_scene_h = 0;
+  g_dir[0] = 0;
 }
 
 void bw_play_close(void) {
@@ -755,6 +551,13 @@ void bw_play_close(void) {
     if (g_tex > 0) { GLuint t = (GLuint)g_tex; glDeleteTextures(1, &t); }
     if (g_text_tex > 0) { GLuint t = (GLuint)g_text_tex; glDeleteTextures(1, &t); }
     if (g_white > 0) { GLuint t = (GLuint)g_white; glDeleteTextures(1, &t); }
+    if (g_checker > 0) { GLuint t = (GLuint)g_checker; glDeleteTextures(1, &t); }
+    for (int i = 0; i < g_nlive; i++) {
+      if (g_live[i].tex > 0) {
+        GLuint t = (GLuint)g_live[i].tex;
+        glDeleteTextures(1, &t);
+      }
+    }
     if (g_copy_prog > 0) glDeleteProgram((GLuint)g_copy_prog);
     if (g_fx_prog > 0) glDeleteProgram((GLuint)g_fx_prog);
     bw_gl_shutdown();
@@ -773,10 +576,9 @@ void bw_play_audio(const float* interleaved, int nfloats) {
 }
 
 int bw_play_open(const char* dir, int w, int h) {
-  char project[1100], type[32], file[512], title[128], image[512], video[1100];
-  char* scene = NULL;
-  char* proj = NULL;
-  int have_dir = 0;
+  BwPlan plan;
+  const char* assets;
+  int i;
   bw_play_close();
   if (w < 8) w = 8;
   if (h < 8) h = 8;
@@ -785,87 +587,60 @@ int bw_play_open(const char* dir, int w, int h) {
   g_w = w;
   g_h = h;
   reset_plan();
-  type[0] = file[0] = title[0] = image[0] = video[0] = 0;
-  if (dir && dir[0]) {
-    snprintf(project, sizeof project, "%s/project.json", dir);
-    proj = read_text(project, 1000000, NULL);
-    have_dir = proj != NULL;
-  }
-  if (proj) {
-    key_string(proj, "type", type, sizeof type);
-    key_string(proj, "file", file, sizeof file);
-    key_string(proj, "title", title, sizeof title);
-    for (char* p = type; *p; p++) *p = (char)tolower((unsigned char)*p);
-  }
-  if (have_dir && load_scene(dir, file, &scene)) {
-    char value[128];
-    scan_effects(scene);
-    if (key_string(strstr(scene, "\"text\"") ? strstr(scene, "\"text\"") : scene, "value", value, sizeof value)) {
-      if (strstr(scene, "\"text\"")) snprintf(g_text, sizeof g_text, "%s", value);
-    }
-    if (!quoted_ext(scene, ".png", image, sizeof image)) {
-      if (!quoted_ext(scene, ".jpg", image, sizeof image))
-        quoted_ext(scene, ".jpeg", image, sizeof image);
-    }
-    if (!quoted_ext(scene, ".mp4", video, sizeof video) &&
-        !quoted_ext(scene, ".webm", video, sizeof video) &&
-        !quoted_ext(scene, ".mkv", video, sizeof video) &&
-        !quoted_ext(scene, ".avi", video, sizeof video) &&
-        !quoted_ext(scene, ".mov", video, sizeof video))
-      video[0] = 0;
-  }
-  if (!strcmp(type, "video") && file[0]) snprintf(video, sizeof video, "%s", file);
-  if (!strcmp(type, "web") && file[0]) snprintf(g_page, sizeof g_page, "%s/%s", dir, file);
-  if (!g_text[0] && title[0]) snprintf(g_text, sizeof g_text, "%s", title);
-  if (!have_dir) {
-    snprintf(g_kind, sizeof g_kind, "demo");
-    snprintf(g_text, sizeof g_text, "Bendwall");
-    g_scroll = 1;
-  } else if (!strcmp(type, "web")) {
-    snprintf(g_kind, sizeof g_kind, "web");
-  } else if (!strcmp(type, "video") || video[0]) {
-    snprintf(g_kind, sizeof g_kind, "video");
-  } else {
-    snprintf(g_kind, sizeof g_kind, "scene");
+  if (dir && dir[0]) snprintf(g_dir, sizeof g_dir, "%s", dir);
+  assets = getenv("BENDWALL_ASSETS");
+  bw_plan_load(dir, assets, &plan);
+  snprintf(g_kind, sizeof g_kind, "%s", plan.kind[0] ? plan.kind : "scene");
+  snprintf(g_text, sizeof g_text, "%s", plan.text);
+  snprintf(g_page, sizeof g_page, "%s", plan.page);
+  g_scroll = plan.scroll;
+  g_spin = plan.spin;
+  g_opacity = plan.opacity;
+  g_colorkey = plan.colorkey;
+  g_tint = plan.tint;
+  g_pulse = plan.pulse;
+  g_has_image = plan.image_ok > 0;
+  g_text_layer = plan.has_text;
+  g_miss = plan.missing;
+  g_scene_w = plan.scene_w;
+  g_scene_h = plan.scene_h;
+  if (plan.video[0] && strcmp(g_kind, "video") == 0) {
+    if (!vid_open(plan.video)) fprintf(stderr, "bendwall: missing video %s\n", plan.video);
   }
   if (!bw_gl_init(g_w, g_h)) {
-    free(scene);
-    free(proj);
+    bw_plan_free(&plan);
     snprintf(g_line, sizeof g_line, "kind=fail shader=0");
     return 0;
   }
   g_gl = 1;
   bw_audio_live_start();
-  if (video[0] && dir) {
-    char path[1100];
-    if (video[0] == '/') snprintf(path, sizeof path, "%s", video);
-    else snprintf(path, sizeof path, "%s/%s", dir, video);
-    vid_open(path);
-  }
-  if (image[0] && dir && !g_has_video) {
-    char path[1100];
-    uint8_t* px = NULL;
-    int iw = 0, ih = 0;
-    if (image[0] == '/') snprintf(path, sizeof path, "%s", image);
-    else snprintf(path, sizeof path, "%s/%s", dir, image);
-    if (load_image(path, &iw, &ih, &px) && px) {
-      if (!bw_gl_begin()) { free(px); }
-      else {
-        g_tex = bw_gl_image(0, iw, ih, px, iw * ih * 4);
-        g_has_image = g_tex > 0;
-        bw_gl_end();
-        free(px);
-      }
+  if (!g_has_video && bw_gl_begin()) {
+    for (i = 0; i < plan.nlayers && g_nlive < MAXL; i++) {
+      BwLayer* L = &plan.layers[i];
+      int tex;
+      if (!L->rgba) continue;
+      tex = bw_gl_image(0, L->w, L->h, L->rgba, L->w * L->h * 4);
+      if (tex <= 0) continue;
+      g_live[g_nlive].tex = tex;
+      g_live[g_nlive].cx = L->cx;
+      g_live[g_nlive].cy = L->cy;
+      g_live[g_nlive].lw = L->lw;
+      g_live[g_nlive].lh = L->lh;
+      g_live[g_nlive].deg = L->deg;
+      g_live[g_nlive].alpha = L->alpha;
+      g_live[g_nlive].full = L->full;
+      g_nlive++;
     }
+    prepare_text();
+    bw_gl_end();
+  } else if (bw_gl_begin()) {
+    prepare_text();
+    bw_gl_end();
   }
-  if (!bw_gl_begin()) { free(scene); free(proj); return 0; }
-  prepare_text();
-  bw_gl_end();
+  bw_plan_free(&plan);
   spectrum_update();
   g_open = draw();
   refresh_line();
-  free(scene);
-  free(proj);
   return g_open;
 }
 

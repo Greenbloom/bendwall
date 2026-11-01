@@ -31,6 +31,13 @@ Item {
     }
 
     function refresh() {
+        try {
+            if (wallpaperDir && String(wallpaperDir).length > 0) {
+                frame.mediaDir = String(wallpaperDir)
+                return
+            }
+        } catch (e) {
+        }
         var id = currentId()
         if (id !== frame.itemId)
             frame.itemId = id
@@ -38,6 +45,7 @@ Item {
 
     Frame {
         id: frame
+        objectName: "bendwallFrame"
         anchors.fill: parent
         live: true
         visible: !root.wallpaperIsWeb() || webLoader.status !== Loader.Ready
@@ -52,12 +60,31 @@ Item {
 
     Loader {
         id: webLoader
+        objectName: "bendwallWeb"
         anchors.fill: parent
         active: root.wallpaperIsWeb()
         source: "WebLayer.qml"
         onLoaded: {
             item.liveAudio = Qt.binding(function () { return frame.audioSamples })
             item.livePage = Qt.binding(function () { return frame.pageUrl })
+        }
+    }
+
+    Rectangle {
+        visible: root.wallpaperIsWeb() && !frame.visible
+        anchors.left: parent.left
+        anchors.top: parent.top
+        anchors.margins: 8
+        width: webBadge.implicitWidth + 16
+        height: webBadge.implicitHeight + 8
+        radius: 4
+        color: "#a0000000"
+        Text {
+            id: webBadge
+            anchors.centerIn: parent
+            text: frame.statsText
+            color: "#e8e6e3"
+            font.pixelSize: 13
         }
     }
 

@@ -219,8 +219,27 @@ static void addImports(QQmlApplicationEngine* engine) {
     }
 }
 
-/* The window is the Plasma page: main.qml, then WebLayer when the item is web. */
-static int loadWatch(QQmlApplicationEngine* engine, QList<QQmlError>* errs, const QString& dir) {
+static bool videoAudioRequested(int argc, char** argv) {
+    const QByteArray env = qgetenv("BENDWALL_VIDEO_AUDIO");
+    if (env == "1") return true;
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--audio") == 0) return true;
+    }
+    return false;
+}
+
+static QString watchDir(int argc, char** argv) {
+    for (int i = 2; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--audio") == 0) continue;
+        return QString::fromLocal8Bit(argv[i]);
+    }
+    return {};
+}
+
+/* The window is the Plasma page: main.qml, then WebLayer when the item is web.
+   wallpaperAudio is the --watch opt-in. Plasma leaves it unset, so a missing
+   configuration stays muted. */
+static int loadWatch(QQmlApplicationEngine* engine, QList<QQmlError>* errs, const QString& dir, bool audio) {
     const QString qml = watchQmlPath();
     if (qml.isEmpty()) {
         std::cerr << "watch.qml not found\n";
@@ -232,6 +251,7 @@ static int loadWatch(QQmlApplicationEngine* engine, QList<QQmlError>* errs, cons
     const QString abs = QFileInfo(dir).absoluteFilePath();
     engine->rootContext()->setContextProperty(QStringLiteral("wallpaperDir"), abs);
     engine->rootContext()->setContextProperty(QStringLiteral("wallpaperKind"), topType(abs));
+    engine->rootContext()->setContextProperty(QStringLiteral("wallpaperAudio"), audio);
     engine->load(QUrl::fromLocalFile(qml));
     if (engine->rootObjects().isEmpty()) {
         if (errs) {
@@ -247,10 +267,10 @@ static int loadWatch(QQmlApplicationEngine* engine, QList<QQmlError>* errs, cons
     return 0;
 }
 
-static int watchCheck(const QString& dir) {
+static int watchCheck(const QString& dir, bool audio) {
     QQmlApplicationEngine engine;
     QList<QQmlError> errs;
-    if (loadWatch(&engine, &errs, dir)) return 1;
+    if (loadWatch(&engine, &errs, dir, audio)) return 1;
     QEventLoop loop;
     QTimer::singleShot(1200, &loop, &QEventLoop::quit);
     loop.exec();
@@ -267,7 +287,9 @@ static int watchCheck(const QString& dir) {
     const int status = loader ? loader->property("status").toInt() : -1;
     const QByteArray kindB = kind.toUtf8();
     const QByteArray pageB = page.toUtf8();
+    const bool muted = frame ? frame->property("videoMuted").toBool() : true;
     std::printf("WATCH kind=%s loader=%d page=%s\n", kindB.constData(), status, pageB.constData());
+    std::printf("WATCHMUTE %d\n", muted ? 1 : 0);
     for (const QQmlError& err : errs) {
         const QByteArray line = err.toString().toUtf8();
         std::printf("WATCHWARN %s\n", line.constData());
@@ -278,10 +300,10 @@ static int watchCheck(const QString& dir) {
 /* The Plasma page's own timer, not a direct Engine::step. A static scene
    stays identical; a particle system has to move, and the step counter has
    to keep climbing, or the clock never reached the player. */
-static int watchDiff(const QString& dir) {
+static int watchDiff(const QString& dir, bool audio) {
     QQmlApplicationEngine engine;
     QList<QQmlError> errs;
-    if (loadWatch(&engine, &errs, dir)) return 1;
+    if (loadWatch(&engine, &errs, dir, audio)) return 1;
     QObject* root = engine.rootObjects().first();
     QObject* frame = root->findChild<QObject*>(QStringLiteral("bendwallFrame"));
     if (!frame) {
@@ -346,24 +368,29 @@ int main(int argc, char** argv) {
         QGuiApplication app(argc, argv);
         QQmlApplicationEngine engine;
         QList<QQmlError> errs;
-        if (loadWatch(&engine, &errs, QString::fromLocal8Bit(argv[2]))) return 1;
+        const QString dir = watchDir(argc, argv);
+        if (dir.isEmpty() || loadWatch(&engine, &errs, dir, videoAudioRequested(argc, argv))) return 1;
         return app.exec();
     }
     if (cmd == "--watch-check" && argc >= 3) {
         QGuiApplication app(argc, argv);
-        return watchCheck(QString::fromLocal8Bit(argv[2]));
+        const QString dir = watchDir(argc, argv);
+        if (dir.isEmpty()) return 1;
+        return watchCheck(dir, videoAudioRequested(argc, argv));
     }
     if (cmd == "--watch-diff" && argc >= 3) {
         QGuiApplication app(argc, argv);
-        return watchDiff(QString::fromLocal8Bit(argv[2]));
+        const QString dir = watchDir(argc, argv);
+        if (dir.isEmpty()) return 1;
+        return watchDiff(dir, videoAudioRequested(argc, argv));
     }
     std::cerr << "usage:\n"
               << "  bendwall-preview --dump-props <project.json>\n"
               << "  bendwall-preview --dump-workshop <workshop-root>\n"
               << "  bendwall-preview --grab <qml> <frame.png> <project.json> <workshop> <out.png> <qml-import-path>\n"
               << "  bendwall-preview --play-frames <item-dir> [frames]\n"
-              << "  bendwall-preview --watch <item-dir>\n"
-              << "  bendwall-preview --watch-check <item-dir>\n"
-              << "  bendwall-preview --watch-diff <item-dir>\n";
+              << "  bendwall-preview --watch <item-dir> [--audio]\n"
+              << "  bendwall-preview --watch-check <item-dir> [--audio]\n"
+              << "  bendwall-preview --watch-diff <item-dir> [--audio]\n";
     return 2;
 }

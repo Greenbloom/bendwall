@@ -16,6 +16,7 @@
 #include <unistd.h>
 
 int bw_audio_play_write(const float* interleaved, int nfloats);
+int bw_audio_play_active(void);
 void bw_audio_play_stop(void);
 
 static pthread_mutex_t g_peek_mu = PTHREAD_MUTEX_INITIALIZER;
@@ -46,9 +47,33 @@ static void remember(const float* s, int n) {
     pthread_mutex_unlock(&g_peek_mu);
 }
 
+static int chunk_audible(const float* s, int n) {
+    int i;
+    for (i = 0; i < n; i++) {
+        if (s[i] > 0.0001f || s[i] < -0.0001f) return 1;
+    }
+    return 0;
+}
+
+static void pace(int nfloats) {
+    int left = nfloats / 2;
+    while (left > 0 && !g_stop) {
+        int frames = left > 1024 ? 1024 : left;
+        usleep((useconds_t)((double)frames * 1000000.0 / 44100.0));
+        left -= frames;
+    }
+}
+
 static void emit(const float* s, int n) {
     int i = 0;
     remember(s, n);
+    /* A muted track must not open a playback stream. Silence is still
+       paced so the decoder stays near the picture. Once the device is
+       open, silence keeps that stream from underrunning. */
+    if (!chunk_audible(s, n) && !bw_audio_play_active()) {
+        pace(n);
+        return;
+    }
     while (i < n && !g_stop) {
         int chunk = n - i;
         if (chunk > 2048) chunk = 2048;

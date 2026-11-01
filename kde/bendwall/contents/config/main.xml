@@ -15,7 +15,7 @@
     </entry>
     <entry name="VideoMute" type="Bool">
       <label>Mute video</label>
-      <default>false</default>
+      <default>true</default>
     </entry>
   </group>
 </kcfg>

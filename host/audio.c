@@ -388,6 +388,14 @@ int bw_audio_play_write(const float* interleaved, int nfloats) {
   return 1;
 }
 
+int bw_audio_play_active(void) {
+  int on;
+  pthread_mutex_lock(&g_play_mu);
+  on = g_play != NULL;
+  pthread_mutex_unlock(&g_play_mu);
+  return on;
+}
+
 void bw_audio_play_stop(void) {
   pthread_mutex_lock(&g_play_mu);
   if (g_play) {

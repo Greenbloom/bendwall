@@ -573,13 +573,17 @@ int main(int argc, char** argv) {
     float peak, power, band;
     bw_play_audio(NULL, 0);
     bw_play_set_video_volume(1.f);
-    bw_play_set_video_mute(0);
     bw_play_set_video_duck(0);
     snprintf(path, sizeof path, "%s/vidaud", root);
     if (!bw_play_open(path, 64, 36)) {
       fprintf(stderr, "open vidadu failed\n%s\n", bw_play_line());
       return 1;
     }
+    n = pull_pcm(buf, 4096, 400);
+    pcm_stats(buf, n, &peak, &power);
+    printf("VAUDDEF peak=%.3f\n", peak);
+    if (peak > 0.02f) bad = 1;
+    bw_play_set_video_mute(0);
     n = pull_pcm(buf, 4096, 600);
     pcm_stats(buf, n, &peak, &power);
     full_power = power;

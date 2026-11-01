@@ -139,6 +139,9 @@ if "models/missing-face.json" not in err:
 vol = [float(x) for x in grab(r"VOL ([0-9.]+) ([0-9.]+) ([0-9.]+)").groups()]
 if vol != [1.0, 1.0, 0.0]:
     raise SystemExit(f"vol {vol}")
+vaud_def = float(grab(r"VAUDDEF peak=([0-9.]+)").group(1))
+if vaud_def > 0.02:
+    raise SystemExit(f"default audio is not silent ({vaud_def})")
 vaud = grab(r"VAUD peak=([0-9.]+) power=([0-9.]+)")
 if float(vaud.group(1)) < 0.5 or float(vaud.group(2)) < 1000:
     raise SystemExit(vaud.group(0))

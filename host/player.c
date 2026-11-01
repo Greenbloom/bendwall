@@ -101,7 +101,7 @@ static uint8_t* g_px;
 static int g_time_ms;
 static float g_video_vol = 1.f;
 static float g_proj_vol = 1.f;
-static int g_user_mute;
+static int g_user_mute = 1;
 static int g_proj_mute;
 static int g_duck = -1;
 static pthread_mutex_t g_gain_mu = PTHREAD_MUTEX_INITIALIZER;

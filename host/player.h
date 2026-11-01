@@ -7,11 +7,11 @@
    into one color target, then the built-in effect passes. Plasma paints
    the readback. One player per process. */
 int bw_play_open(const char* dir, int w, int h);
-/* Plasma volume, 0..1. The default is 1, so a video soundtrack plays.
-   0 mutes. Multiplied by the project volume from general / properties. */
+/* Plasma volume, 0..1. The default is 1. 0 mutes. Multiplied by the
+   project volume from general / properties. */
 void bw_play_set_video_volume(float volume);
 float bw_play_video_volume(void);
-/* Plasma mute checkbox. Independent of volume 0. */
+/* Plasma mute. The default is on, so a soundtrack is opt-in. */
 void bw_play_set_video_mute(int on);
 /* -1 duck when another app is fullscreen or playing audio, 0 never, 1 force. */
 void bw_play_set_video_duck(int mode);

@@ -10,7 +10,7 @@ Column {
 
     property string cfg_Item: ""
     property int cfg_VideoVolume: 100
-    property bool cfg_VideoMute: false
+    property bool cfg_VideoMute: true
 
     function idList() {
         try {
@@ -78,7 +78,7 @@ Column {
     }
 
     Text {
-        text: "100 plays the video's own soundtrack. 0 mutes it. The track also mutes while another app is fullscreen or playing audio."
+        text: "Off until Mute video is unticked. 100 is then the video's own level, and 0 mutes it as well. The track also mutes while another app is fullscreen or playing audio."
         color: "#9a958c"
         font.pixelSize: 11
         width: 236

@@ -46,17 +46,42 @@ i = xml.find("VideoVolume")
 if i < 0 or "<default>100</default>" not in xml[i:i + 240]:
     raise SystemExit("video volume default is not 100")
 j = xml.find("VideoMute")
-if j < 0 or "<default>false</default>" not in xml[j:j + 240]:
-    raise SystemExit("video mute default is not false")
+if j < 0 or "<default>true</default>" not in xml[j:j + 240]:
+    raise SystemExit("video mute default is not true")
 if "property int cfg_VideoVolume: 100" not in qml:
     raise SystemExit("config slider missing")
-if "property bool cfg_VideoMute: false" not in qml:
+if "property bool cfg_VideoMute: true" not in qml:
     raise SystemExit("config mute missing")
 if "videoVolume" not in main or "return 1" not in main:
-    raise SystemExit("main.qml does not default video volume to 1")
-if "videoMuted" not in main or "return false" not in main:
-    raise SystemExit("main.qml does not default video mute to false")
+    raise SystemExit("main.qml does not keep video volume at 1 once unmuted")
+if "videoMuted" not in main or "return !root.videoOptIn()" not in main:
+    raise SystemExit("main.qml does not mute video unless opted in")
+if "wallpaperAudio" not in main:
+    raise SystemExit("main.qml has no watch audio opt-in")
 print("VOLUME PASS")
+PY
+python3 - <<'PY'
+import pathlib, sys
+text = pathlib.Path("build/watch-video.out").read_text()
+if "WATCHMUTE 1" not in text:
+    raise SystemExit("watch is not muted by default\n" + text)
+print("WATCHMUTE PASS default")
+PY
+BENDWALL_VIDEO_AUDIO=1 QT_QPA_PLATFORM=offscreen timeout 20 ./build/kde/bendwall-preview --watch-check "$PWD/fixtures/play/video" > build/watch-audio-env.out
+python3 - <<'PY'
+import pathlib
+text = pathlib.Path("build/watch-audio-env.out").read_text()
+if "WATCHMUTE 0" not in text:
+    raise SystemExit("BENDWALL_VIDEO_AUDIO=1 did not enable watch audio\n" + text)
+print("WATCHMUTE PASS env")
+PY
+QT_QPA_PLATFORM=offscreen timeout 20 ./build/kde/bendwall-preview --watch-check "$PWD/fixtures/play/video" --audio > build/watch-audio-flag.out
+python3 - <<'PY'
+import pathlib
+text = pathlib.Path("build/watch-audio-flag.out").read_text()
+if "WATCHMUTE 0" not in text:
+    raise SystemExit("--audio did not enable watch audio\n" + text)
+print("WATCHMUTE PASS flag")
 PY
 QT_QPA_PLATFORM=offscreen timeout 25 ./build/kde/bendwall-preview --watch-diff "$PWD/fixtures/play/spark" > build/watch-diff.out
 python3 tools/check_watch_diff.py build/watch-diff.out

@@ -30,6 +30,15 @@ Item {
         return ids.length ? ids[0] : ""
     }
 
+    function videoOptIn() {
+        try {
+            if (wallpaperAudio === true || wallpaperAudio === 1 || wallpaperAudio === "1")
+                return true
+        } catch (e) {
+        }
+        return false
+    }
+
     function refresh() {
         try {
             if (wallpaperDir && String(wallpaperDir).length > 0) {
@@ -65,12 +74,12 @@ Item {
             try {
                 var m = wallpaper.configuration.VideoMute
                 if (m === undefined || m === null || m === "")
-                    return false
+                    return !root.videoOptIn()
                 if (m === false || m === 0 || m === "false" || m === "0")
                     return false
                 return true
             } catch (e) {
-                return false
+                return !root.videoOptIn()
             }
         }
         visible: !root.wallpaperIsWeb() || webLoader.status !== Loader.Ready

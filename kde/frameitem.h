@@ -86,7 +86,7 @@ private:
     QString m_stats;
     QVariantList m_audio;
     qreal m_vol = 1;
-    bool m_mute = false;
+    bool m_mute = true;
     Engine m_engine;
     QTimer* m_timer = nullptr;
     int m_frames = 0;

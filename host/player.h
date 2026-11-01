@@ -7,6 +7,10 @@
    into one color target, then the built-in effect passes. Plasma paints
    the readback. One player per process. */
 int bw_play_open(const char* dir, int w, int h);
+/* 0..1. The default is 0, which keeps video silent. The video decoder does
+   not open an audio stream at any volume. */
+void bw_play_set_video_volume(float volume);
+float bw_play_video_volume(void);
 void bw_play_audio(const float* interleaved, int nfloats);
 int bw_play_step(int dt_ms);
 int bw_play_rgba(uint8_t* dst, int cap);

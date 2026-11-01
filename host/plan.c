@@ -21,6 +21,7 @@
 #define CAP_FILE (256 * 1024 * 1024)
 #define CAP_RAW (8192 * 8192 * 4)
 #define MAX_LAYER 32
+#define MAX_PART_SYS 64
 
 static uint32_t ru32(const uint8_t* p) {
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
@@ -1680,6 +1681,430 @@ static void take_image(BwPlan* plan, const char* dir, const char* assets, const 
     paint_got(plan, obj, "(no path)", 0, &g, 0, 0, 0, 1);
 }
 
+static int block_named(const Jv* root, const char* section, const char* name, Jv* out) {
+    Jv arr, item;
+    int i, n;
+    char got[64];
+    if (!root || !j_obj_get(root, section, &arr) || arr.kind != 4) return 0;
+    n = j_arr_count(&arr);
+    for (i = 0; i < n; i++) {
+        char* p;
+        if (!j_arr_at(&arr, i, &item) || item.kind != 3) continue;
+        if (!j_field(&item, "name", got, sizeof got)) continue;
+        for (p = got; *p; ++p) *p = (char)tolower((unsigned char)*p);
+        if (strcmp(got, name) == 0) {
+            *out = item;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int first_emitter(const Jv* doc, Jv* out) {
+    Jv arr, item;
+    if (block_named(doc, "emitter", "sphererandom", out)) return 1;
+    if (block_named(doc, "emitter", "boxrandom", out)) return 1;
+    if (block_named(doc, "emitter", "layerimage", out)) return 1;
+    if (!j_obj_get(doc, "emitter", &arr) || arr.kind != 4) return 0;
+    if (!j_arr_at(&arr, 0, &item) || item.kind != 3) return 0;
+    *out = item;
+    return 1;
+}
+
+static float over_mul(const Jv* obj, const char* key) {
+    Jv over;
+    int present = 0;
+    float v;
+    if (!obj || !j_obj_get(obj, "instanceoverride", &over) || over.kind != 3) return 1.f;
+    v = j_num(&over, key, 1.f, &present);
+    if (!present) return 1.f;
+    if (v < 0.f) return 0.f;
+    return v;
+}
+
+static int over_off(const Jv* obj) {
+    Jv over, v;
+    char b[16];
+    if (!obj || !j_obj_get(obj, "instanceoverride", &over) || over.kind != 3) return 0;
+    if (!j_obj_get(&over, "enabled", &v)) return 0;
+    v = j_unwrap(&v);
+    if (v.kind == 6) return 1;
+    if (j_lit(&v, b, sizeof b) && (strcmp(b, "0") == 0 || strcmp(b, "false") == 0)) return 1;
+    return 0;
+}
+
+static int over_vec(const Jv* obj, const char* key, float* x, float* y, float* z) {
+    Jv over;
+    if (!obj || !j_obj_get(obj, "instanceoverride", &over) || over.kind != 3) return 0;
+    return j_vec(&over, key, x, y, z);
+}
+
+static void color_fix(float* r, float* g, float* b) {
+    float m = *r;
+    if (*g > m) m = *g;
+    if (*b > m) m = *b;
+    if (m > 1.f) {
+        *r /= 255.f;
+        *g /= 255.f;
+        *b /= 255.f;
+    }
+    if (*r < 0.f) *r = 0.f;
+    if (*g < 0.f) *g = 0.f;
+    if (*b < 0.f) *b = 0.f;
+    if (*r > 1.f) *r = 1.f;
+    if (*g > 1.f) *g = 1.f;
+    if (*b > 1.f) *b = 1.f;
+}
+
+static void rot2(float deg, float x, float y, float* ox, float* oy) {
+    float rad = deg * 0.01745329251f;
+    float c = cosf(rad);
+    float s = sinf(rad);
+    *ox = x * c - y * s;
+    *oy = x * s + y * c;
+}
+
+static int pass_additive(const Jv* material) {
+    Jv passes, pass;
+    char b[32];
+    char* p;
+    if (!material || !j_obj_get(material, "passes", &passes) || passes.kind != 4) return 0;
+    if (!j_arr_at(&passes, 0, &pass) || pass.kind != 3) return 0;
+    if (!j_field(&pass, "blending", b, sizeof b)) return 0;
+    for (p = b; *p; ++p) *p = (char)tolower((unsigned char)*p);
+    return strcmp(b, "additive") == 0 || strcmp(b, "add") == 0;
+}
+
+static float num_key(const Jv* obj, const char* a, const char* b, float fallback, int* present) {
+    int pa = 0, pb = 0;
+    float v;
+    v = j_num(obj, a, fallback, &pa);
+    if (pa) {
+        if (present) *present = 1;
+        return v;
+    }
+    if (!b) {
+        if (present) *present = 0;
+        return fallback;
+    }
+    v = j_num(obj, b, fallback, &pb);
+    if (present) *present = pb;
+    return v;
+}
+
+static int vec_key(const Jv* obj, const char* a, const char* b, float* x, float* y, float* z) {
+    if (j_vec(obj, a, x, y, z)) return 1;
+    if (b && j_vec(obj, b, x, y, z)) return 1;
+    return 0;
+}
+
+/* 1 decoded, 0 absent, -1 found but not a picture. Also tries .png and .jpg
+   when the material omits the extension and the .tex slot is empty. */
+static int load_picture(const char* dir, const char* assets, const char* rel, PxGot* g, char* why, int why_cap) {
+    char alt[1100];
+    int st;
+    st = load_pixels(dir, assets, rel, g, why, why_cap);
+    if (st > 0 || !rel || raster_ext(rel)) return st;
+    snprintf(alt, sizeof alt, "%s.png", rel);
+    st = load_pixels(dir, assets, alt, g, why, why_cap);
+    if (st > 0) return st;
+    snprintf(alt, sizeof alt, "%s.jpg", rel);
+    return load_pixels(dir, assets, alt, g, why, why_cap);
+}
+
+static int push_part(BwPlan* plan, BwPartSys sys) {
+    BwPartSys* n;
+    if (plan->nparts >= MAX_PART_SYS) {
+        free(sys.rgba);
+        fprintf(stderr, "bendwall: particle cap\n");
+        return 0;
+    }
+    n = (BwPartSys*)realloc(plan->parts, (size_t)(plan->nparts + 1) * sizeof(BwPartSys));
+    if (!n) {
+        free(sys.rgba);
+        return 0;
+    }
+    plan->parts = n;
+    plan->parts[plan->nparts++] = sys;
+    return 1;
+}
+
+static void take_particle(BwPlan* plan, const char* dir, const char* assets, const Jv* obj) {
+    Jv field, doc, em, block, mat;
+    BwPartSys sys;
+    char path[512], matp[512], tex[512], why[1100], alt[1100];
+    char* blob = NULL;
+    char* matb = NULL;
+    PxGot g;
+    float ox, oy, oz, ex, ey, ez, deg, ax, ay, az;
+    float dx, dy, dz, len, sign, bright, mul;
+    float cpx[8], cpy[8];
+    int i, present, st, id, nc;
+    if (over_off(obj)) return;
+    if (!j_obj_get(obj, "particle", &field)) return;
+    if (!pull_path(&field, path, sizeof path, 0) || !path[0]) {
+        fprintf(stderr, "bendwall: particle not found (no path)\n");
+        return;
+    }
+    slash(path);
+    blob = load_json_rel(dir, assets, path);
+    if (!blob && !strchr(path, '/')) blob = load_json_prefixed(dir, assets, path, "particles/");
+    if (!blob && !strchr(path, '/')) {
+        snprintf(alt, sizeof alt, "particles/presets/%s", path);
+        blob = load_json_rel(dir, assets, alt);
+    }
+    if (!blob || !j_doc(blob, &doc)) {
+        fprintf(stderr, "bendwall: particle not found %s\n", path);
+        free(blob);
+        return;
+    }
+    memset(&sys, 0, sizeof sys);
+    sys.size_b = -1.f;
+    sys.a0 = sys.a1 = 1.f;
+    sys.r0 = sys.g0 = sys.b0 = 1.f;
+    sys.r1 = sys.g1 = sys.b1 = 1.f;
+    sys.er = sys.eg = sys.eb = 1.f;
+    sys.life0 = sys.life1 = 2.f;
+    sys.size0 = sys.size1 = 16.f;
+    sys.maxcount = 32;
+    if (!first_emitter(&doc, &em)) {
+        fprintf(stderr, "bendwall: particle not found %s\n", path);
+        free(blob);
+        return;
+    }
+    sys.rate = j_num(&em, "rate", 1.f, &present);
+    if (!present) sys.rate = 1.f;
+    sys.burst = j_num(&em, "instantaneous", 0.f, &present) > 0.5f;
+    sys.speed0 = num_key(&em, "speedmin", "minspeed", 0.f, &present);
+    sys.speed1 = num_key(&em, "speedmax", "maxspeed", sys.speed0, &present);
+    if (!present) sys.speed1 = sys.speed0;
+    sys.dist0 = num_key(&em, "distancemin", "mindistance", 0.f, &present);
+    sys.dist1 = num_key(&em, "distancemax", "maxdistance", sys.dist0, &present);
+    if (!present) sys.dist1 = sys.dist0;
+    dx = dy = dz = 0.f;
+    if (!j_vec(&em, "directions", &dx, &dy, &dz)) dx = dy = 0.f;
+    len = sqrtf(dx * dx + dy * dy);
+    if (len > 0.0001f) {
+        dx /= len;
+        dy /= len;
+    } else {
+        dx = 0.f;
+        dy = 0.f;
+    }
+    sign = j_num(&em, "sign", 1.f, &present);
+    if (sign < 0.f) {
+        dx = -dx;
+        dy = -dy;
+    }
+    ex = ey = ez = 0.f;
+    j_vec(&em, "origin", &ex, &ey, &ez);
+    if (block_named(&doc, "initializer", "lifetimerandom", &block)) {
+        sys.life0 = num_key(&block, "min", "minimum", sys.life0, &present);
+        sys.life1 = num_key(&block, "max", "maximum", sys.life0, &present);
+        if (!present) sys.life1 = sys.life0;
+    }
+    if (block_named(&doc, "initializer", "sizerandom", &block)) {
+        sys.size0 = num_key(&block, "min", "minimum", sys.size0, &present);
+        sys.size1 = num_key(&block, "max", "maximum", sys.size0, &present);
+        if (!present) sys.size1 = sys.size0;
+    }
+    if (block_named(&doc, "initializer", "alpharandom", &block)) {
+        sys.a0 = num_key(&block, "min", "minimum", 1.f, &present);
+        sys.a1 = num_key(&block, "max", "maximum", sys.a0, &present);
+        if (!present) sys.a1 = sys.a0;
+    }
+    if (block_named(&doc, "initializer", "colorrandom", &block)) {
+        if (!vec_key(&block, "min", "minimum", &sys.r0, &sys.g0, &sys.b0)) {
+            sys.r0 = sys.g0 = sys.b0 = 1.f;
+        }
+        if (!vec_key(&block, "max", "maximum", &sys.r1, &sys.g1, &sys.b1)) {
+            sys.r1 = sys.r0;
+            sys.g1 = sys.g0;
+            sys.b1 = sys.b0;
+        }
+        color_fix(&sys.r0, &sys.g0, &sys.b0);
+        color_fix(&sys.r1, &sys.g1, &sys.b1);
+    }
+    if (block_named(&doc, "initializer", "rotationrandom", &block)) {
+        sys.ang0 = num_key(&block, "min", "minimum", 0.f, &present);
+        sys.ang1 = num_key(&block, "max", "maximum", sys.ang0, &present);
+        if (!present) sys.ang1 = sys.ang0;
+    }
+    if (block_named(&doc, "operator", "movement", &block)) {
+        if (!j_vec(&block, "gravity", &sys.gravx, &sys.gravy, &ez)) sys.gravx = sys.gravy = 0.f;
+        sys.drag = j_num(&block, "drag", 0.f, &present);
+    }
+    if (block_named(&doc, "operator", "alphafade", &block)) {
+        sys.alphafade = 1;
+        sys.fade_in = num_key(&block, "fadeintime", "fadein", 0.f, &present);
+        sys.fade_out = num_key(&block, "fadeouttime", "fadeout", 0.f, &present);
+    }
+    if (block_named(&doc, "operator", "sizechange", &block)) {
+        int ha = 0, hb = 0;
+        float a = num_key(&block, "startvalue", "start", 1.f, &ha);
+        float b = num_key(&block, "endvalue", "end", 1.f, &hb);
+        if (ha && hb) {
+            sys.size_a = a;
+            sys.size_b = b;
+        } else {
+            sys.size_b = -1.f;
+            sys.size_rate = j_num(&block, "rate", 0.f, &present);
+        }
+    }
+    if (block_named(&doc, "operator", "colorchange", &block)) {
+        float r, gch, b;
+        if (vec_key(&block, "endvalue", "end", &r, &gch, &b)) {
+            color_fix(&r, &gch, &b);
+            sys.er = r;
+            sys.eg = gch;
+            sys.eb = b;
+            sys.color_lerp = 1;
+        } else {
+            sys.color_lerp = 0;
+        }
+    }
+    if (block_named(&doc, "operator", "angularmovement", &block)) {
+        int pa = 0;
+        float sp = num_key(&block, "speed", "rate", 0.f, &pa);
+        if (!pa && j_vec(&block, "angularvelocity", &ax, &ay, &az)) sp = az;
+        sys.ang_rate = sp;
+    }
+    memset(cpx, 0, sizeof cpx);
+    memset(cpy, 0, sizeof cpy);
+    if (j_obj_get(&doc, "controlpoint", &block) && block.kind == 4) {
+        nc = j_arr_count(&block);
+        if (nc > 8) nc = 8;
+        for (i = 0; i < nc; i++) {
+            Jv cp;
+            float cx, cy, cz;
+            if (!j_arr_at(&block, i, &cp) || cp.kind != 3) continue;
+            id = (int)j_num(&cp, "id", (float)i, &present);
+            if (id < 0 || id > 7) continue;
+            if (!vec_key(&cp, "offset", "origin", &cx, &cy, &cz)) continue;
+            cpx[id] = cx;
+            cpy[id] = cy;
+        }
+    }
+    for (i = 0; i < 8; i++) {
+        char key[32];
+        float cx, cy, cz;
+        snprintf(key, sizeof key, "controlpoint%d", i);
+        if (!over_vec(obj, key, &cx, &cy, &cz)) continue;
+        cpx[i] = cx;
+        cpy[i] = cy;
+    }
+    if (block_named(&doc, "operator", "controlpointattract", &block)) {
+        id = (int)j_num(&block, "controlpoint", 0.f, &present);
+        if (id < 0) id = 0;
+        if (id > 7) id = 7;
+        sys.attract = num_key(&block, "scale", "force", 0.f, &present);
+        if (!present) sys.attract = num_key(&block, "strength", "rate", 0.f, &present);
+        sys.cpx = cpx[id];
+        sys.cpy = cpy[id];
+        if (vec_key(&block, "origin", NULL, &ax, &ay, &az)) {
+            sys.cpx = ax;
+            sys.cpy = ay;
+        }
+        sys.has_attract = sys.attract != 0.f;
+    }
+    sys.start = j_num(&doc, "starttime", 0.f, &present);
+    sys.maxcount = (int)(j_num(&doc, "maxcount", 32.f, &present) + 0.5f);
+    if (sys.maxcount < 1) sys.maxcount = 1;
+    mul = over_mul(obj, "count");
+    sys.maxcount = (int)((float)sys.maxcount * mul + 0.5f);
+    if (sys.maxcount > 128) sys.maxcount = 128;
+    if (sys.maxcount < 0) sys.maxcount = 0;
+    sys.rate *= over_mul(obj, "rate");
+    mul = over_mul(obj, "lifetime");
+    sys.life0 *= mul;
+    sys.life1 *= mul;
+    if (sys.life0 < 0.05f) sys.life0 = 0.05f;
+    if (sys.life1 < 0.05f) sys.life1 = 0.05f;
+    mul = over_mul(obj, "speed");
+    sys.speed0 *= mul;
+    sys.speed1 *= mul;
+    mul = over_mul(obj, "size");
+    sys.size0 *= mul;
+    sys.size1 *= mul;
+    mul = over_mul(obj, "alpha");
+    sys.a0 *= mul;
+    sys.a1 *= mul;
+    bright = over_mul(obj, "brightness");
+    sys.r0 *= bright;
+    sys.g0 *= bright;
+    sys.b0 *= bright;
+    sys.r1 *= bright;
+    sys.g1 *= bright;
+    sys.b1 *= bright;
+    sys.er *= bright;
+    sys.eg *= bright;
+    sys.eb *= bright;
+    ox = oy = oz = 0.f;
+    j_vec(obj, "origin", &ox, &oy, &oz);
+    deg = 0.f;
+    if (j_vec(obj, "angles", &ax, &ay, &az)) deg = az;
+    {
+        float rx, ry;
+        rot2(deg, ex, ey, &rx, &ry);
+        sys.ox = ox + rx;
+        sys.oy = oy + ry;
+        rot2(deg, dx, dy, &sys.dirx, &sys.diry);
+        if (sys.has_attract) {
+            rot2(deg, sys.cpx, sys.cpy, &rx, &ry);
+            sys.cpx = ox + rx;
+            sys.cpy = oy + ry;
+        }
+    }
+    mul = j_num(obj, "alpha", 1.f, &present);
+    if (!present) mul = 1.f;
+    if (mul < 0.f) mul = 0.f;
+    if (mul > 1.f) mul = 1.f;
+    sys.a0 *= mul;
+    sys.a1 *= mul;
+    if (j_vec(obj, "scale", &ax, &ay, &az) && ax > 0.f) {
+        sys.size0 *= ax;
+        sys.size1 *= ax;
+    }
+    matp[0] = 0;
+    if (!j_field(&doc, "material", matp, sizeof matp) || !matp[0]) {
+        if (pull_material(&field, matp, sizeof matp, 0)) {
+        } else
+            matp[0] = 0;
+    }
+    slash(matp);
+    sys.additive = 0;
+    tex[0] = 0;
+    if (matp[0]) {
+        matb = load_json_rel(dir, assets, matp);
+        if (!matb) matb = load_json_prefixed(dir, assets, matp, "materials/");
+        if (matb && j_doc(matb, &mat)) {
+            sys.additive = pass_additive(&mat);
+            first_texture(&mat, tex, sizeof tex);
+        } else {
+            fprintf(stderr, "bendwall: particle material not found %s\n", matp);
+        }
+    }
+    free(matb);
+    free(blob);
+    memset(&g, 0, sizeof g);
+    why[0] = 0;
+    st = 0;
+    if (tex[0]) st = load_picture(dir, assets, tex, &g, why, (int)sizeof why);
+    if (st > 0 && g.rgba) {
+        sys.rgba = g.rgba;
+        sys.tw = g.w;
+        sys.th = g.h;
+        g.rgba = NULL;
+    } else {
+        miss_log(why[0] ? why : (tex[0] ? tex : matp), st < 0);
+        plan->missing++;
+        sys.rgba = checker_px(&sys.tw, &sys.th);
+    }
+    clear_got(&g);
+    if (!sys.rgba) return;
+    push_part(plan, sys);
+}
+
 static void take_text(BwPlan* plan, const Jv* obj) {
     Jv t, inner;
     char value[160];
@@ -1708,13 +2133,14 @@ static void walk_scene(BwPlan* plan, const char* dir, const char* assets, const 
     }
     if (j_obj_get(&root, "objects", &gen) && gen.kind == 4) {
         n = j_arr_count(&gen);
-        if (n > 64) n = 64;
+        if (n > 256) n = 256;
         for (i = 0; i < n; i++) {
             Jv obj;
             if (!j_arr_at(&gen, i, &obj) || obj.kind != 3) continue;
             if (!visible_obj(&obj)) continue;
             take_text(plan, &obj);
             if (j_obj_get(&obj, "image", &ortho)) take_image(plan, dir, assets, &obj);
+            if (j_obj_get(&obj, "particle", &ortho)) take_particle(plan, dir, assets, &obj);
         }
     }
 }
@@ -1809,6 +2235,12 @@ void bw_plan_free(BwPlan* plan) {
     free(plan->layers);
     plan->layers = NULL;
     plan->nlayers = 0;
+    if (plan->parts) {
+        for (i = 0; i < plan->nparts; i++) free(plan->parts[i].rgba);
+        free(plan->parts);
+        plan->parts = NULL;
+        plan->nparts = 0;
+    }
 }
 
 int bw_scene_ready(const char* dir, const char* assets) {

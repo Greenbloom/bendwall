@@ -18,13 +18,13 @@ Synthetic fixtures stand in for Workshop files, so the checks run without a Stea
 
 The headless frame is yellow on the left, cyan on the right, with a yellow sprite on the cyan half. That is the effect pass (`TINT`), the camera, and parallax, drawn by EGL on llvmpipe.
 
-Particles: one spark starts at the origin with speed 2 and gravity `(0, -1)`. After two steps of `dt = 1` it is at `(4, -1)` with alpha `0.5`. `sizechange`, `angularmovement`, and `colorchange` add their rate each step: size `3`, angle `180`, color `2`.
+Particles: one spark starts at the origin with speed 2 and gravity `(0, -1)`. After two steps of `dt = 1` it is at `(4, -1)` with alpha `0.5`. `sizechange`, `angularmovement`, and `colorchange` add their rate each step: size `3`, angle `180`, color `2`. That proof is unchanged. The live player also reads `particle` objects: `sphererandom`, `boxrandom`, and `layerimage` emitters, lifetime, size, alpha, color, and rotation ranges, then `movement` (gravity and drag), `alphafade`, `sizechange`, `colorchange`, `angularmovement`, and `controlpointattract`. `instanceoverride` multiplies rate, count, lifetime, size, speed, alpha, and brightness, and replaces `controlpointN`. Sprites are drawn in scene pixels (x right, y down) with the material texture. `blending: additive` uses source-alpha, one. The texture is the material's first image, from the package or from `BENDWALL_ASSETS` (a `.tex`, or a `.png` / `.jpg` when the extension was omitted). A missing particle texture is logged like any other missing texture and the sprite is the checker. The probe still prints `partial particle` when a scene contains a particle object.
 
 Audio: a 16-point DFT of a constant signal has bin 0 equal to 16 and the other bins under `0.05`. A cosine at bin 2 peaks at bin 2. `ln(16) = 4 ln(2)`. That proof is unchanged. The live picture also uploads `g_AudioSpectrum16Left`, `g_AudioSpectrum16Right`, and the 32 and 64 variants. A background Pulse read fills them from the monitor of the default sink (what is playing), not the microphone. `BENDWALL_AUDIO_SOURCE` overrides that device. The web listener gets the same analysis as 128 floats, left bands 0..63 then right bands 64..127. With no Pulse server the read is 0. The headless proof injects a buffer instead: a constant left channel puts band 0 at 1.0 for 16, 32, and 64, and a cosine at bin 8 peaks there.
 
 SceneScript: QuickJS runs `update(value)` and a bare `return value;` body. The include is `<quickjs/quickjs.h>` when that header exists, which covers the Arch layout (`/usr/include/quickjs/`) and the Debian layout.
 
-Video: libav keeps one decoder open and draws each new frame into the scene image. A synthetic two-frame clip is red, then green. The project `type`, `file`, and `title` are the top-level keys, so a `type` buried in `general.properties` does not hide a video. The picture stays upright: the effect pass samples the color target with the first video row at the top of the screen, and the title bitmap is drawn after that pass. The frame is capped at 1920×1080; a larger screen scales it up.
+Video: libav keeps one decoder open and draws each new frame into the scene image. A synthetic two-frame clip is red, then green. The project `type`, `file`, and `title` are the top-level keys, so a `type` buried in `general.properties` does not hide a video. The picture stays upright: the effect pass samples the color target with the first video row at the top of the screen, and the title bitmap is drawn after that pass. The frame is capped at 1920×1080; a larger screen scales it up. Video audio is off. The decoder never opens an audio stream, at volume 0 or above, so a wallpaper does not make sound. The Plasma settings page has **Video volume**, stored as `VideoVolume`, and the default is 0. That slider is the opt-in; this build still drops the audio track. `--watch` leaves the binding unset and stays silent too.
 
 Scene pictures walk each object to its model json, then the material, then `textures[0]`. The `image` field may be that model path, or an object carrying it (`file`, `path`, `model`, `value`), or a material reference (`material`). A slot named `ztyz` is `materials/ztyz.tex` in the package (`PKGV0001` through `PKGV0009`), and if that is absent the same path under `BENDWALL_ASSETS`. A `.tex` (raw, LZ4, DXT, an embedded PNG or JPEG, or a TEXS sheet), including an 8192² atlas, is decoded and drawn in scene pixels with y growing downward, then cover-fit onto the screen. TEXS frames advance with `frametime`. A loose PNG or JPEG still stretches to the frame. A name that resolves to nothing is logged as `bendwall: texture not found` followed by the path that was tried (`models/missing-face.json`, `materials/ztyz.tex`), not the key name. Bytes that are not a picture are logged as `bendwall: texture decode failed` and that same path. Either way the layer is a green-and-red checkerboard. A scene that still has any missing texture counts as partial, even when another layer decoded. A scene whose only layer is text, with nothing missing, still counts as loaded.
 
@@ -73,8 +73,8 @@ Bend owns parsing, the scene model, preset and user-property resolution, shader 
 | `host/gl.c` | C | EGL and OpenGL. Confirmed: the Bend base library has no GL effect |
 | `host/audio.c` | C | Pulse simple API. A one-second alarm so a missing server cannot stall the frame |
 | `host/video.c` | C | libav decode of frame N, uploaded with the GL texture call |
-| `host/plan.c` | C | top-level project keys, model → material → `.tex` / PNG / JPEG, the checker a missing texture draws |
-| `host/player.c` | C | the live scene image: open video decoder, text bitmap, effect passes, spectrum uniforms |
+| `host/plan.c` | C | top-level project keys, model → material → `.tex` / PNG / JPEG, particle systems, the checker a missing texture draws |
+| `host/player.c` | C | the live scene image: open video decoder, text bitmap, particle sprites, effect passes, spectrum uniforms |
 | `host/text.c` | C | 5×7 bitmap. Bend has no font rasterizer |
 | `host/script.c` | C | QuickJS. Bend has no JavaScript runtime |
 | `host/webshim.js` | JavaScript | the page-side API from REA §12, injected by the wallpaper |
@@ -148,6 +148,7 @@ Plasma reads `~/.config/plasma-workspace/env/*.sh` at login, not when a shell st
 3. Set the wallpaper type to **Bendwall**.
 4. Choose a Workshop item in that page and apply. The list is the folder names under `BENDWALL_WORKSHOP`. An empty choice plays the first item, or a moving demo if the workshop path is missing.
 5. A video item plays in the wallpaper. A web item loads in Qt WebEngine. The top-left corner reads `fps`, CPU percent, and the item kind (`video`, `scene`, `web`, or `demo`). The numbers use a dot, including when `LC_NUMERIC` is `de_DE.UTF-8`.
+6. Video volume starts at 0. The wallpaper stays silent. The slider is the opt-in for video sound; playback of that track is not wired up yet.
 
 The same page is the preview, which does not need a Plasma session or a logout:
 
@@ -158,7 +159,7 @@ build/kde/bendwall-preview --watch fixtures/play/video
 build/kde/bendwall-preview --watch path/to/workshop-item
 ```
 
-`--play-frames` prints two frames of the clip and a `PLAY fps=… cpu=… size=640x360` line. The second frame is one second later, or one whole frame when the frame is longer than that, and the two pictures are compared across every pixel. The decoder is allowed to catch up across that gap, so a 24fps film does not compare the same frame with itself. `--watch` opens the Plasma `main.qml` page: a scene or video paints the live frame, and a web item loads `WebLayer`. `LIBGL_ALWAYS_SOFTWARE=1` forces llvmpipe; leave it unset on the Intel GPU.
+`--play-frames` prints two frames of the clip and a `PLAY fps=… cpu=… size=640x360` line. The second frame is one second later, or one whole frame when the frame is longer than that, and the two pictures are compared across every pixel. The decoder is allowed to catch up across that gap, so a 24fps film does not compare the same frame with itself. `--watch` opens the Plasma `main.qml` page: a scene or video paints the live frame, and a web item loads `WebLayer`. `--watch-diff` uses that same page and its 33 ms timer, then compares the picture across one second. `fixtures/play/spark` is a moving additive sprite, so the two frames differ and the step counter climbs. `LIBGL_ALWAYS_SOFTWARE=1` forces llvmpipe; leave it unset on the Intel GPU.
 
 ### Remove it
 

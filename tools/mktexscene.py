@@ -251,6 +251,76 @@ def sheet_tex():
     )
 
 
+def write_spark():
+    """A dark plate and one additive sprite that travels +x at 70 px/s."""
+    bg = bytes([12, 16, 28, 255]) * 16
+    white = bytes([255, 255, 255, 255]) * 16
+    part = """{
+  "material": "materials/spark.json",
+  "maxcount": 8,
+  "starttime": 0,
+  "emitter": [{
+    "name": "sphererandom",
+    "rate": 1,
+    "origin": "0 0 0",
+    "directions": "1 0 0",
+    "distancemin": 0,
+    "distancemax": 0,
+    "speedmin": 70,
+    "speedmax": 70
+  }],
+  "initializer": [
+    {"name": "lifetimerandom", "min": 3, "max": 3},
+    {"name": "sizerandom", "min": 16, "max": 16},
+    {"name": "alpharandom", "min": 1, "max": 1},
+    {"name": "colorrandom", "min": "1 0.47 0.12", "max": "1 0.47 0.12"},
+    {"name": "rotationrandom", "min": 0, "max": 0}
+  ],
+  "operator": [
+    {"name": "movement", "gravity": "0 0 0", "drag": 0},
+    {"name": "alphafade", "fadeintime": 0, "fadeouttime": 0.4},
+    {"name": "sizechange", "startvalue": 1, "endvalue": 0.5},
+    {"name": "colorchange", "startvalue": "1 0.47 0.12", "endvalue": "1 0.9 0.2"},
+    {"name": "angularmovement", "speed": 0}
+  ],
+  "renderer": [{"name": "sprite"}]
+}
+"""
+    scene = """{
+  "general": {"orthogonalprojection": {"width": 160, "height": 90}},
+  "objects": [
+    {"name": "bg", "image": "textures/bg.png", "origin": "80 45 0", "size": "160 90 0"},
+    {
+      "name": "spark",
+      "particle": "particles/spark.json",
+      "origin": "24 45 0",
+      "angles": "0 0 0",
+      "scale": "1 1 1",
+      "alpha": 1,
+      "instanceoverride": {
+        "alpha": 1, "count": 1, "lifetime": 1, "rate": 1,
+        "size": 1, "speed": 1, "brightness": 1
+      }
+    }
+  ]
+}
+"""
+    project = '{ "type": "scene", "file": "scene.json" }\n'
+    local_mat = """{"passes": [{"blending": "additive", "textures": ["textures/spark.png"]}]}
+"""
+    asset_mat = """{"passes": [{"blending": "additive", "textures": ["materials/particle/spark.png"]}]}
+"""
+    for name, mat in (("spark", local_mat), ("sparkasset", asset_mat)):
+        root = os.path.join(PLAY, name)
+        write(os.path.join(root, "textures", "bg.png"), png_rgba(4, 4, bg))
+        write_text(os.path.join(root, "particles", "spark.json"), part)
+        write_text(os.path.join(root, "materials", "spark.json"), mat)
+        write_text(os.path.join(root, "scene.json"), scene)
+        write_text(os.path.join(root, "project.json"), project)
+    write(os.path.join(PLAY, "spark", "textures", "spark.png"), png_rgba(4, 4, white))
+    write(os.path.join(PLAY, "spark-assets", "materials", "particle", "spark.png"), png_rgba(4, 4, white))
+
+
 def main():
     write(os.path.join(PLAY, "texscene", "scene.pkg"), scene_pkg())
     write(os.path.join(PLAY, "texscene", "decoy.png"), png_rgba(8, 8, YELLOW * 64))
@@ -360,6 +430,7 @@ def main():
     write_text(os.path.join(PLAY, "gifscene", "project.json"),
                '{ "type": "scene", "file": "gifscene.json", "title": "Hack page" }\n')
     write(os.path.join(PLAY, "sheet.tex"), sheet_tex())
+    write_spark()
     print("mktexscene ok")
 
 

@@ -275,6 +275,45 @@ static int watchCheck(const QString& dir) {
     return kind.isEmpty() ? 1 : 0;
 }
 
+/* The Plasma page's own timer, not a direct Engine::step. A static scene
+   stays identical; a particle system has to move, and the step counter has
+   to keep climbing, or the clock never reached the player. */
+static int watchDiff(const QString& dir) {
+    QQmlApplicationEngine engine;
+    QList<QQmlError> errs;
+    if (loadWatch(&engine, &errs, dir)) return 1;
+    QObject* root = engine.rootObjects().first();
+    QObject* frame = root->findChild<QObject*>(QStringLiteral("bendwallFrame"));
+    if (!frame) {
+        std::cerr << "bendwallFrame missing\n";
+        return 1;
+    }
+    if (frame->property("width").toReal() < 8 || frame->property("height").toReal() < 8) {
+        frame->setProperty("width", 320);
+        frame->setProperty("height", 180);
+    }
+    QElapsedTimer clock;
+    clock.start();
+    while (frame->property("steps").toInt() < 1 && clock.elapsed() < 2500)
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 40);
+    const int s0 = frame->property("steps").toInt();
+    const QImage a = frame->property("frameImage").value<QImage>();
+    QEventLoop loop;
+    QTimer::singleShot(1100, &loop, &QEventLoop::quit);
+    loop.exec();
+    const int s1 = frame->property("steps").toInt();
+    const QImage b = frame->property("frameImage").value<QImage>();
+    const int diff = (!a.isNull() && !b.isNull()) ? pictureDiff(a, b) : 0;
+    std::printf("WATCHDIFF steps=%d %d diff=%d size=%dx%d\n", s0, s1, diff, b.width(), b.height());
+    for (const QQmlError& err : errs) {
+        const QByteArray line = err.toString().toUtf8();
+        std::printf("WATCHWARN %s\n", line.constData());
+    }
+    if (s0 < 1 || s1 < s0 + 8) return 1;
+    if (!diff || b.width() < 8 || b.height() < 8) return 1;
+    return 0;
+}
+
 int main(int argc, char** argv) {
     const std::string cmd = argc > 1 ? argv[1] : "";
     /* WebEngineView stays uncreatable until this runs, and it has to run
@@ -314,12 +353,17 @@ int main(int argc, char** argv) {
         QGuiApplication app(argc, argv);
         return watchCheck(QString::fromLocal8Bit(argv[2]));
     }
+    if (cmd == "--watch-diff" && argc >= 3) {
+        QGuiApplication app(argc, argv);
+        return watchDiff(QString::fromLocal8Bit(argv[2]));
+    }
     std::cerr << "usage:\n"
               << "  bendwall-preview --dump-props <project.json>\n"
               << "  bendwall-preview --dump-workshop <workshop-root>\n"
               << "  bendwall-preview --grab <qml> <frame.png> <project.json> <workshop> <out.png> <qml-import-path>\n"
               << "  bendwall-preview --play-frames <item-dir> [frames]\n"
               << "  bendwall-preview --watch <item-dir>\n"
-              << "  bendwall-preview --watch-check <item-dir>\n";
+              << "  bendwall-preview --watch-check <item-dir>\n"
+              << "  bendwall-preview --watch-diff <item-dir>\n";
     return 2;
 }

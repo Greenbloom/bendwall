@@ -156,6 +156,16 @@ int main(int argc, char** argv) {
   int tr = 0, tg = 0, tb = 0, ta = 0;
   float b16 = 0, b32 = 0, b64 = 0, r16 = 0, tone64 = 0, tone16 = 0;
   int diff, white, bad = 0;
+  {
+    float v0 = bw_play_video_volume();
+    float v1, v2;
+    bw_play_set_video_volume(2.f);
+    v1 = bw_play_video_volume();
+    bw_play_set_video_volume(-1.f);
+    v2 = bw_play_video_volume();
+    printf("VOL %.2f %.2f %.2f\n", v0, v1, v2);
+    if (v0 != 0.f || v1 != 1.f || v2 != 0.f) bad = 1;
+  }
   snprintf(path, sizeof path, "%s/video", root);
   constant_audio();
   if (!bw_play_open(path, 160, 90)) {
@@ -477,6 +487,48 @@ int main(int argc, char** argv) {
     rl = bw_scene_ready(label, NULL);
     printf("READY mixed=%d gif=%d label=%d\n", rm, rgf, rl);
     if (rm != 0 || rgf != 1 || rl != 1) bad = 1;
+  }
+
+  bw_play_audio(NULL, 0);
+  snprintf(path, sizeof path, "%s/spark", root);
+  if (!bw_play_open(path, 160, 90)) {
+    fprintf(stderr, "open spark failed\n%s\n", bw_play_line());
+    return 1;
+  }
+  printf("SPARK0 %s\n", bw_play_line());
+  {
+    int hr = 0, hg = 0, hb = 0, ar = 0, ag = 0, ab = 0;
+    if (!bw_play_step(1000)) return 1;
+    printf("SPARK1 %s\n", bw_play_line());
+    if (!at(24, 45, &hr, &hg, &hb) || !at(94, 45, &ar, &ag, &ab)) return 1;
+    printf("SPARK home=%d %d %d away=%d %d %d\n", hr, hg, hb, ar, ag, ab);
+    if (hr > 40 || hg > 40 || hb > 50) bad = 1;
+    if (ar < 240 || ag < 140 || ag > 210 || ab < 40 || ab > 100) bad = 1;
+  }
+  bw_play_close();
+
+  {
+    const char* old_assets = getenv("BENDWALL_ASSETS");
+    char saved[1100];
+    saved[0] = 0;
+    if (old_assets) snprintf(saved, sizeof saved, "%s", old_assets);
+    snprintf(path, sizeof path, "%s/spark-assets", root);
+    setenv("BENDWALL_ASSETS", path, 1);
+    snprintf(path, sizeof path, "%s/sparkasset", root);
+    if (!bw_play_open(path, 160, 90)) {
+      fprintf(stderr, "open sparkasset failed\n%s\n", bw_play_line());
+      return 1;
+    }
+    if (!bw_play_step(1000)) return 1;
+    {
+      int ar = 0, ag = 0, ab = 0;
+      if (!at(94, 45, &ar, &ag, &ab)) return 1;
+      printf("SPARKASSET %d %d %d\n", ar, ag, ab);
+      if (ar < 240 || ag < 140 || ag > 210 || ab < 40 || ab > 100) bad = 1;
+    }
+    bw_play_close();
+    if (saved[0]) setenv("BENDWALL_ASSETS", saved, 1);
+    else unsetenv("BENDWALL_ASSETS");
   }
 
   if (!diff) bad = 1;

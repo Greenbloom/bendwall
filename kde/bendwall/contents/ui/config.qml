@@ -9,6 +9,7 @@ Column {
     padding: 12
 
     property string cfg_Item: ""
+    property int cfg_VideoVolume: 0
 
     function idList() {
         try {
@@ -69,5 +70,39 @@ Column {
         }
     }
 
+    Text {
+        text: "Video volume"
+        color: "#e8e6e3"
+        font.pixelSize: 13
+    }
+
+    Text {
+        text: "Starts at 0, muted. The video track is not played."
+        color: "#9a958c"
+        font.pixelSize: 11
+        width: 236
+        wrapMode: Text.Wrap
+    }
+
+    Slider {
+        id: volume
+        from: 0
+        to: 100
+        stepSize: 1
+        implicitWidth: 236
+        value: column.cfg_VideoVolume
+        onMoved: column.cfg_VideoVolume = Math.round(value)
+    }
+
+    Text {
+        text: Math.round(volume.value) + " / 100"
+        color: "#c8c4bc"
+        font.pixelSize: 12
+    }
+
     onCfg_ItemChanged: applyCfg()
+    onCfg_VideoVolumeChanged: {
+        if (Math.round(volume.value) !== cfg_VideoVolume)
+            volume.value = cfg_VideoVolume
+    }
 }

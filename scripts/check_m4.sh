@@ -37,6 +37,22 @@ QT_QPA_PLATFORM=offscreen timeout 20 ./build/kde/bendwall-preview --watch-check 
 python3 tools/check_watch.py build/watch-scene.out scene
 QT_QPA_PLATFORM=offscreen timeout 20 ./build/kde/bendwall-preview --watch-check "$PWD/fixtures/play/video" > build/watch-video.out
 python3 tools/check_watch.py build/watch-video.out video
+python3 - <<'PY'
+import pathlib
+xml = pathlib.Path("kde/bendwall/contents/config/main.xml").read_text()
+qml = pathlib.Path("kde/bendwall/contents/ui/config.qml").read_text()
+main = pathlib.Path("kde/bendwall/contents/ui/main.qml").read_text()
+i = xml.find("VideoVolume")
+if i < 0 or "<default>0</default>" not in xml[i:i + 240]:
+    raise SystemExit("video volume default is not 0")
+if "property int cfg_VideoVolume: 0" not in qml:
+    raise SystemExit("config slider missing")
+if "videoVolume" not in main or "return 0" not in main:
+    raise SystemExit("main.qml does not default video volume to 0")
+print("VOLUME PASS")
+PY
+QT_QPA_PLATFORM=offscreen timeout 25 ./build/kde/bendwall-preview --watch-diff "$PWD/fixtures/play/spark" > build/watch-diff.out
+python3 tools/check_watch_diff.py build/watch-diff.out
 if [ -d /opt/cursor/artifacts ]; then
   cp -f build/m4-grab.png /opt/cursor/artifacts/m4-preview.png
 fi

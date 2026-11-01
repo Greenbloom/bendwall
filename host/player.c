@@ -52,8 +52,9 @@ static const char* k_copy =
   "in vec2 v;\n"
   "uniform sampler2D g_Texture0;\n"
   "uniform float g_Alpha;\n"
+  "uniform vec3 g_Color;\n"
   "out vec4 fragColor;\n"
-  "void main(){ vec4 c = texture(g_Texture0, v); c.a *= g_Alpha; fragColor = c; }\n";
+  "void main(){ vec4 c = texture(g_Texture0, v); c.rgb *= g_Color; c.a *= g_Alpha; fragColor = c; }\n";
 
 typedef struct Vid {
   AVFormatContext* fmt;
@@ -94,6 +95,7 @@ static int g_nlive;
 static int g_miss;
 static uint8_t* g_px;
 static int g_time_ms;
+static float g_video_vol;
 static int g_uni;
 static int g_scroll, g_spin, g_opacity, g_colorkey, g_tint, g_pulse;
 static int g_has_text, g_has_video, g_has_image, g_text_layer;
@@ -208,6 +210,9 @@ static int vid_open(const char* path) {
     }
   }
   if (g_vid.stream < 0) { vid_close(); return 0; }
+  /* Audio packets are never decoded. Volume 0 is the default, and no
+     volume opens an audio decoder or a playback device. */
+  (void)g_video_vol;
   codec = avcodec_find_decoder(g_vid.fmt->streams[g_vid.stream]->codecpar->codec_id);
   if (!codec) { vid_close(); return 0; }
   g_vid.ctx = avcodec_alloc_context3(codec);
@@ -291,9 +296,18 @@ static void spectrum_update(void) {
   memcpy(g_web + 64, g_b64r, sizeof g_b64r);
 }
 
+static void set_rgb(int prog, float r, float g, float b) {
+  GLint loc;
+  if (prog <= 0) return;
+  glUseProgram((GLuint)prog);
+  loc = glGetUniformLocation((GLuint)prog, "g_Color");
+  if (loc >= 0) glUniform3f(loc, r, g, b);
+}
+
 static int draw_quad(int prog, int tex, int x, int y, int w, int h, float alpha) {
   float x0, y0, x1, y1;
   if (w < 1 || h < 1 || tex <= 0) return 0;
+  set_rgb(prog, 1.f, 1.f, 1.f);
   bw_gl_f1(prog, "g_Alpha", fbits(alpha));
   x0 = (float)x / (float)g_w * 2.f - 1.f;
   x1 = (float)(x + w) / (float)g_w * 2.f - 1.f;
@@ -311,6 +325,7 @@ static int draw_live(int prog, const Live* L) {
   float corners[4][2];
   int i;
   if (L->tex <= 0) return 0;
+  set_rgb(prog, 1.f, 1.f, 1.f);
   if (L->full || L->lw < 1.f || L->lh < 1.f) {
     x = 0;
     y = 0;
@@ -473,6 +488,264 @@ static void sync_sprites(void) {
   }
 }
 
+#define MAX_SYS 64
+#define MAX_P 128
+
+typedef struct Part {
+  float x, y, vx, vy, age, life, size, ang, r, g, b, a;
+} Part;
+
+typedef struct Sys {
+  BwPartSys spec;
+  int tex;
+  int n;
+  int burst_done;
+  float acc;
+  uint32_t rng;
+  Part p[MAX_P];
+} Sys;
+
+static Sys g_sys[MAX_SYS];
+static int g_nsys;
+
+static float lerand(uint32_t* s, float a, float b) {
+  float t;
+  *s = *s * 1664525u + 1013904223u;
+  t = (float)(*s >> 8) * (1.f / 16777216.f);
+  return a + (b - a) * t;
+}
+
+static int alive_count(void) {
+  int s, n = 0;
+  for (s = 0; s < g_nsys; s++) n += g_sys[s].n;
+  return n;
+}
+
+static void spawn_one(Sys* S) {
+  Part* p;
+  float dirx, diry, dist, sp, life, sz, a, cr, cg, cb, ang;
+  uint32_t rng;
+  if (!S || S->n >= S->spec.maxcount || S->n >= MAX_P) return;
+  rng = S->rng;
+  if (S->spec.dirx * S->spec.dirx + S->spec.diry * S->spec.diry > 1e-8f) {
+    dirx = S->spec.dirx;
+    diry = S->spec.diry;
+  } else {
+    float t = lerand(&rng, 0.f, 6.2831853f);
+    dirx = cosf(t);
+    diry = sinf(t);
+  }
+  dist = lerand(&rng, S->spec.dist0, S->spec.dist1);
+  sp = lerand(&rng, S->spec.speed0, S->spec.speed1);
+  life = lerand(&rng, S->spec.life0, S->spec.life1);
+  if (life < 0.05f) life = 0.05f;
+  sz = lerand(&rng, S->spec.size0, S->spec.size1);
+  a = lerand(&rng, S->spec.a0, S->spec.a1);
+  cr = lerand(&rng, S->spec.r0, S->spec.r1);
+  cg = lerand(&rng, S->spec.g0, S->spec.g1);
+  cb = lerand(&rng, S->spec.b0, S->spec.b1);
+  ang = lerand(&rng, S->spec.ang0, S->spec.ang1);
+  S->rng = rng;
+  p = &S->p[S->n++];
+  memset(p, 0, sizeof *p);
+  p->x = S->spec.ox + dirx * dist;
+  p->y = S->spec.oy + diry * dist;
+  p->vx = dirx * sp;
+  p->vy = diry * sp;
+  p->life = life;
+  p->size = sz;
+  p->ang = ang;
+  p->r = cr;
+  p->g = cg;
+  p->b = cb;
+  p->a = a;
+}
+
+static void integrate_sys(Sys* S, float dt) {
+  int i, w = 0;
+  float drag = 1.f - S->spec.drag * dt;
+  if (drag < 0.f) drag = 0.f;
+  for (i = 0; i < S->n; i++) {
+    Part* p = &S->p[i];
+    float dx, dy, d;
+    p->x += p->vx * dt;
+    p->y += p->vy * dt;
+    p->vx = (p->vx + S->spec.gravx * dt) * drag;
+    p->vy = (p->vy + S->spec.gravy * dt) * drag;
+    if (S->spec.has_attract) {
+      dx = S->spec.cpx - p->x;
+      dy = S->spec.cpy - p->y;
+      d = sqrtf(dx * dx + dy * dy);
+      if (d > 0.5f) {
+        p->vx += dx / d * S->spec.attract * dt;
+        p->vy += dy / d * S->spec.attract * dt;
+      }
+    }
+    p->ang += S->spec.ang_rate * dt;
+    p->age += dt;
+    if (p->age < p->life) {
+      if (w != i) S->p[w] = *p;
+      w++;
+    }
+  }
+  S->n = w;
+}
+
+static void sim_particles(float dt) {
+  int s;
+  float t;
+  if (dt <= 0.f || g_nsys <= 0) return;
+  t = (float)g_time_ms / 1000.f;
+  for (s = 0; s < g_nsys; s++) {
+    Sys* S = &g_sys[s];
+    int guard = 0;
+    if (t < S->spec.start) continue;
+    if (S->spec.burst && !S->burst_done) {
+      int k;
+      S->burst_done = 1;
+      for (k = 0; k < S->spec.maxcount && k < MAX_P; k++) spawn_one(S);
+    }
+    S->acc += S->spec.rate * dt;
+    while (S->acc >= 1.f && S->n < S->spec.maxcount && S->n < MAX_P && guard++ < MAX_P) {
+      spawn_one(S);
+      S->acc -= 1.f;
+    }
+    integrate_sys(S, dt);
+  }
+}
+
+static int draw_sprite(int prog, int tex, float cx, float cy, float w, float h, float deg, float alpha, float r, float g, float b) {
+  float hx, hy, rad, c, s;
+  float v[20];
+  float uvs[4][2] = {{0, 0}, {1, 0}, {0, 1}, {1, 1}};
+  float corners[4][2];
+  int i;
+  if (tex <= 0 || w < 0.5f || h < 0.5f) return 0;
+  if (r < 0.f) r = 0.f;
+  if (g < 0.f) g = 0.f;
+  if (b < 0.f) b = 0.f;
+  set_rgb(prog, r, g, b);
+  bw_gl_f1(prog, "g_Alpha", fbits(alpha));
+  hx = w * 0.5f;
+  hy = h * 0.5f;
+  rad = deg * 0.01745329251f;
+  c = cosf(rad);
+  s = sinf(rad);
+  corners[0][0] = -hx; corners[0][1] = -hy;
+  corners[1][0] = hx; corners[1][1] = -hy;
+  corners[2][0] = -hx; corners[2][1] = hy;
+  corners[3][0] = hx; corners[3][1] = hy;
+  for (i = 0; i < 4; i++) {
+    float lx = corners[i][0] * c - corners[i][1] * s;
+    float ly = corners[i][0] * s + corners[i][1] * c;
+    float px = cx + lx;
+    float py = cy + ly;
+    v[i * 5] = px / (float)g_w * 2.f - 1.f;
+    v[i * 5 + 1] = 1.f - py / (float)g_h * 2.f;
+    v[i * 5 + 2] = 0;
+    v[i * 5 + 3] = uvs[i][0];
+    v[i * 5 + 4] = uvs[i][1];
+  }
+  return bw_gl_verts(prog, tex, v);
+}
+
+static void cover_of(float* ox, float* oy, float* cover) {
+  float sw = g_scene_w > 1.f ? g_scene_w : (float)g_w;
+  float sh = g_scene_h > 1.f ? g_scene_h : (float)g_h;
+  float c = 1.f;
+  if (sw > 0.f && sh > 0.f) c = fmaxf((float)g_w / sw, (float)g_h / sh);
+  *cover = c;
+  *ox = ((float)g_w - sw * c) * 0.5f;
+  *oy = ((float)g_h - sh * c) * 0.5f;
+}
+
+static void draw_particles(void) {
+  int s, i;
+  float ox, oy, cover;
+  if (g_nsys <= 0 || g_copy_prog <= 0) return;
+  cover_of(&ox, &oy, &cover);
+  glEnable(GL_BLEND);
+  for (s = 0; s < g_nsys; s++) {
+    Sys* S = &g_sys[s];
+    if (S->tex <= 0) continue;
+    if (S->spec.additive) glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+    else glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    for (i = 0; i < S->n; i++) {
+      Part* p = &S->p[i];
+      float u, sz, a, r, g, b;
+      if (p->life <= 0.f) continue;
+      u = p->age / p->life;
+      if (u < 0.f) u = 0.f;
+      if (u > 1.f) u = 1.f;
+      if (S->spec.size_b >= 0.f)
+        sz = p->size * (S->spec.size_a + (S->spec.size_b - S->spec.size_a) * u);
+      else
+        sz = p->size + S->spec.size_rate * p->age;
+      a = p->a;
+      if (S->spec.alphafade) {
+        if (S->spec.fade_in > 0.f || S->spec.fade_out > 0.f) {
+          float fin = 1.f, fout = 1.f;
+          if (S->spec.fade_in > 0.f) fin = p->age / S->spec.fade_in;
+          if (S->spec.fade_out > 0.f) fout = (p->life - p->age) / S->spec.fade_out;
+          if (fin < 0.f) fin = 0.f;
+          if (fin > 1.f) fin = 1.f;
+          if (fout < 0.f) fout = 0.f;
+          if (fout > 1.f) fout = 1.f;
+          a *= fin * fout;
+        } else
+          a *= 1.f - u;
+      }
+      if (a <= 0.001f || sz < 0.5f) continue;
+      r = p->r;
+      g = p->g;
+      b = p->b;
+      if (S->spec.color_lerp) {
+        r = p->r + (S->spec.er - p->r) * u;
+        g = p->g + (S->spec.eg - p->g) * u;
+        b = p->b + (S->spec.eb - p->b) * u;
+      }
+      draw_sprite(g_copy_prog, S->tex,
+                  ox + p->x * cover, oy + p->y * cover,
+                  sz * cover, sz * cover, p->ang, a, r, g, b);
+    }
+  }
+  glDisable(GL_BLEND);
+}
+
+static void load_particles(const BwPlan* plan) {
+  int i;
+  g_nsys = 0;
+  if (!plan) return;
+  for (i = 0; i < plan->nparts && g_nsys < MAX_SYS; i++) {
+    const BwPartSys* src = &plan->parts[i];
+    int tex;
+    if (!src->rgba || src->tw < 1 || src->th < 1) continue;
+    tex = bw_gl_image(0, src->tw, src->th, src->rgba, src->tw * src->th * 4);
+    if (tex <= 0) continue;
+    memset(&g_sys[g_nsys], 0, sizeof g_sys[g_nsys]);
+    g_sys[g_nsys].spec = *src;
+    g_sys[g_nsys].spec.rgba = NULL;
+    g_sys[g_nsys].tex = tex;
+    g_sys[g_nsys].rng = 1u + (uint32_t)g_nsys * 997u;
+    if (g_sys[g_nsys].spec.maxcount > MAX_P) g_sys[g_nsys].spec.maxcount = MAX_P;
+    if (g_sys[g_nsys].spec.maxcount < 0) g_sys[g_nsys].spec.maxcount = 0;
+    g_nsys++;
+  }
+}
+
+static void free_particle_tex(void) {
+  int i;
+  for (i = 0; i < g_nsys; i++) {
+    if (g_sys[i].tex > 0) {
+      GLuint t = (GLuint)g_sys[i].tex;
+      glDeleteTextures(1, &t);
+      g_sys[i].tex = 0;
+    }
+    g_sys[i].n = 0;
+  }
+  g_nsys = 0;
+}
+
 static int draw(void) {
   int bar_h, band_w, i, scale, nread;
   const float* bands[6];
@@ -496,11 +769,12 @@ static int draw(void) {
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     for (i = 0; i < g_nlive; i++) draw_live(g_copy_prog, &g_live[i]);
     glDisable(GL_BLEND);
-  } else {
+  } else if (g_nsys <= 0) {
     if (g_dir[0] && strcmp(g_kind, "web") != 0 && strcmp(g_kind, "demo") != 0 && !g_text_layer)
       fprintf(stderr, "bendwall: no picture in %s\n", g_dir);
     if (ensure_checker() > 0) draw_quad(g_copy_prog, g_checker, 0, 0, g_w, g_h, 1.f);
   }
+  draw_particles();
   if (!bw_gl_bind(0) || !bw_gl_clear()) { bw_gl_end(); return 0; }
   bw_gl_f1(g_fx_prog, "g_Time", fbits((float)g_time_ms / 1000.f));
   bands[0] = g_b16l; bands[1] = g_b16r; bands[2] = g_b32l;
@@ -552,10 +826,10 @@ static int draw(void) {
 
 static void refresh_line(void) {
   snprintf(g_line, sizeof g_line,
-    "kind=%s video=%d text=%d image=%d scroll=%d spin=%d opacity=%d colorkey=%d tint=%d pulse=%d uni=%d step=%d b16=%.3f b32=%.3f b64=%.3f r16=%.3f shader=%d miss=%d",
+    "kind=%s video=%d text=%d image=%d scroll=%d spin=%d opacity=%d colorkey=%d tint=%d pulse=%d uni=%d step=%d b16=%.3f b32=%.3f b64=%.3f r16=%.3f shader=%d miss=%d parts=%d alive=%d vol=%.2f t=%d",
     g_kind, g_has_video, g_has_text, g_has_image, g_scroll, g_spin, g_opacity, g_colorkey,
     g_tint, g_pulse, g_uni, g_vid.frame_ms, g_b16l[0], g_b32l[0], g_b64l[0], g_b16r[0],
-    g_fx_prog > 0 ? 1 : 0, g_miss);
+    g_fx_prog > 0 ? 1 : 0, g_miss, g_nsys, alive_count(), g_video_vol, g_time_ms);
 }
 
 static void prepare_text(void) {
@@ -584,6 +858,7 @@ static void reset_plan(void) {
   g_copy_prog = 0;
   g_fx_prog = 0;
   g_nlive = 0;
+  g_nsys = 0;
   g_miss = 0;
   g_scene_w = g_scene_h = 0;
   g_dir[0] = 0;
@@ -602,6 +877,7 @@ void bw_play_close(void) {
       }
       free_live_anim(&g_live[i]);
     }
+    free_particle_tex();
     if (g_copy_prog > 0) glDeleteProgram((GLuint)g_copy_prog);
     if (g_fx_prog > 0) glDeleteProgram((GLuint)g_fx_prog);
     bw_gl_shutdown();
@@ -614,6 +890,14 @@ void bw_play_close(void) {
   g_open = 0;
   reset_plan();
 }
+
+void bw_play_set_video_volume(float volume) {
+  if (volume < 0.f) volume = 0.f;
+  if (volume > 1.f) volume = 1.f;
+  g_video_vol = volume;
+}
+
+float bw_play_video_volume(void) { return g_video_vol; }
 
 void bw_play_audio(const float* interleaved, int nfloats) {
   bw_audio_inject(interleaved, nfloats);
@@ -690,9 +974,11 @@ int bw_play_open(const char* dir, int w, int h) {
       }
       g_nlive++;
     }
+    load_particles(&plan);
     prepare_text();
     bw_gl_end();
   } else if (bw_gl_begin()) {
+    load_particles(&plan);
     prepare_text();
     bw_gl_end();
   }
@@ -708,6 +994,7 @@ int bw_play_step(int dt_ms) {
   if (!g_open) return 0;
   if (dt_ms < 0) dt_ms = 0;
   g_time_ms += dt_ms;
+  sim_particles((float)dt_ms / 1000.f);
   if (g_vid.open) {
     g_vid.acc += dt_ms;
     /* A one-second step on a 30fps clip is ~30 frames. The old cap of 8

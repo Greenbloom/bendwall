@@ -136,6 +136,27 @@ if re.search(r"texture not found image$", err, re.M):
     raise SystemExit("logged the word image\n" + err)
 if "models/missing-face.json" not in err:
     raise SystemExit(err)
+vol = [float(x) for x in grab(r"VOL ([0-9.]+) ([0-9.]+) ([0-9.]+)").groups()]
+if vol != [0.0, 1.0, 0.0]:
+    raise SystemExit(f"vol {vol}")
+s0 = grab(r"SPARK0 .*parts=(\d+) alive=(\d+) vol=([0-9.]+) t=(\d+)")
+s1 = grab(r"SPARK1 .*parts=(\d+) alive=(\d+) vol=([0-9.]+) t=(\d+)")
+if s0.group(1) != "1" or s0.group(2) != "0" or s0.group(4) != "0":
+    raise SystemExit(s0.group(0))
+if s1.group(1) != "1" or s1.group(2) != "1" or s1.group(4) != "1000":
+    raise SystemExit(s1.group(0))
+spark = grab(r"SPARK home=(\d+) (\d+) (\d+) away=(\d+) (\d+) (\d+)")
+home = [int(spark.group(i)) for i in (1, 2, 3)]
+away = [int(spark.group(i)) for i in (4, 5, 6)]
+if home[0] > 40 or home[1] > 40 or home[2] > 50:
+    raise SystemExit("spark home " + str(home))
+# One additive sprite, colour lerped a third of the way from (1, 0.47, 0.12)
+# toward (1, 0.9, 0.2), on the dark plate.
+if away[0] < 240 or not (140 <= away[1] <= 210) or not (40 <= away[2] <= 100):
+    raise SystemExit("spark away " + str(away))
+assetp = [int(x) for x in grab(r"SPARKASSET (\d+) (\d+) (\d+)").groups()]
+if assetp[0] < 240 or not (140 <= assetp[1] <= 210) or not (40 <= assetp[2] <= 100):
+    raise SystemExit(f"sparkasset {assetp}")
 if "PLAYMAIN ok" not in text:
     raise SystemExit(text)
 print("PLAY PASS")

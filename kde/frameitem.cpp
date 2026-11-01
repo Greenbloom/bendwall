@@ -5,6 +5,7 @@
 #include <QDateTime>
 #include <QFont>
 #include <QPainter>
+#include <QQuickWindow>
 
 FrameItem::FrameItem(QQuickItem* parent) : QQuickPaintedItem(parent) {
     setRenderTarget(QQuickPaintedItem::Image);
@@ -58,6 +59,15 @@ void FrameItem::setMediaDir(const QString& dir) {
     if (m_live) reopen();
 }
 
+void FrameItem::setVideoVolume(qreal volume) {
+    if (volume < 0) volume = 0;
+    if (volume > 1) volume = 1;
+    if (qAbs(m_vol - volume) < 0.0001) return;
+    m_vol = volume;
+    m_engine.setVideoVolume((float)m_vol);
+    emit videoVolumeChanged();
+}
+
 void FrameItem::ensureTimer() {
     if (!m_timer) {
         m_timer = new QTimer(this);
@@ -75,13 +85,23 @@ void FrameItem::reopen() {
     m_engine.close();
     m_kind.clear();
     m_page.clear();
+    m_img = QImage();
+    m_steps = 0;
 }
 
 void FrameItem::tick() {
     if (!m_live) return;
-    const int w = (int)width();
-    const int h = (int)height();
+    int w = (int)width();
+    int h = (int)height();
+    /* Anchors can leave the item at 0×0 until a layout pass. The window is
+       already the wallpaper size, and a 0×0 item used to skip every tick,
+       so the clock never moved. */
+    if ((w < 8 || h < 8) && window()) {
+        if (w < 8) w = (int)window()->width();
+        if (h < 8) h = (int)window()->height();
+    }
     if (w < 8 || h < 8) return;
+    m_engine.setVideoVolume((float)m_vol);
     if (!m_engine.ready()) {
         QString dir = m_dir;
         if (dir.isEmpty()) dir = itemDirectory(m_item);
@@ -96,7 +116,10 @@ void FrameItem::tick() {
         emit kindChanged();
         emit pageUrlChanged();
     }
-    m_engine.step(33);
+    if (m_engine.step(33)) {
+        m_steps++;
+        emit stepsChanged();
+    }
     m_img = m_engine.image();
     m_audio = m_engine.audio();
     emit audioSamplesChanged();

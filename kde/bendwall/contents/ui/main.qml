@@ -48,6 +48,19 @@ Item {
         objectName: "bendwallFrame"
         anchors.fill: parent
         live: true
+        videoVolume: {
+            try {
+                var v = wallpaper.configuration.VideoVolume
+                if (v === undefined || v === null || v === "")
+                    return 0
+                var n = Number(v)
+                if (isNaN(n))
+                    return 0
+                return n / 100
+            } catch (e) {
+                return 0
+            }
+        }
         visible: !root.wallpaperIsWeb() || webLoader.status !== Loader.Ready
         framePath: {
             try {

@@ -34,6 +34,37 @@ typedef struct BwLayer {
     int nframes;
 } BwLayer;
 
+/* One sprite particle system, already scaled by instanceoverride.
+   Positions are scene pixels, x right, y down, the same as image layers.
+   size_b < 0 means size grows by size_rate per second instead of a lerp.
+   rgba is the material texture (or the checker when that texture is missing). */
+typedef struct BwPartSys {
+    float ox, oy;
+    float dirx, diry;
+    float dist0, dist1;
+    float rate;
+    float life0, life1;
+    float speed0, speed1;
+    float size0, size1;
+    float size_a, size_b, size_rate;
+    float a0, a1;
+    float fade_in, fade_out;
+    int alphafade;
+    float r0, g0, b0, r1, g1, b1;
+    float er, eg, eb;
+    int color_lerp;
+    float gravx, gravy, drag;
+    float ang0, ang1, ang_rate;
+    float start;
+    float attract, cpx, cpy;
+    int has_attract;
+    int additive;
+    int maxcount;
+    int burst;
+    uint8_t* rgba;
+    int tw, th;
+} BwPartSys;
+
 typedef struct BwPlan {
     char type[32];
     char file[512];
@@ -48,6 +79,8 @@ typedef struct BwPlan {
     float scene_w, scene_h;
     BwLayer* layers;
     int nlayers;
+    BwPartSys* parts;
+    int nparts;
 } BwPlan;
 
 /* Top-level project keys only. Scene images walk object → model → material

@@ -13,6 +13,8 @@ public:
     void close();
     bool step(int dtMs);
     void setAudio(const QVector<float>& interleaved);
+    /* 0..1. 0 leaves video silent. The player does not open an audio stream. */
+    void setVideoVolume(float volume);
     QImage image() const;
     QString line() const;
     QString kind() const;

@@ -22,6 +22,9 @@ class FrameItem : public QQuickPaintedItem {
     Q_PROPERTY(QString pageUrl READ pageUrl NOTIFY pageUrlChanged)
     Q_PROPERTY(QString statsText READ statsText NOTIFY statsChanged)
     Q_PROPERTY(QVariantList audioSamples READ audioSamples NOTIFY audioSamplesChanged)
+    Q_PROPERTY(qreal videoVolume READ videoVolume WRITE setVideoVolume NOTIFY videoVolumeChanged)
+    Q_PROPERTY(int steps READ steps NOTIFY stepsChanged)
+    Q_PROPERTY(QImage frameImage READ frameImage)
 
 public:
     explicit FrameItem(QQuickItem* parent = nullptr);
@@ -35,12 +38,16 @@ public:
     QString pageUrl() const { return m_page; }
     QString statsText() const { return m_stats; }
     QVariantList audioSamples() const { return m_audio; }
+    qreal videoVolume() const { return m_vol; }
+    int steps() const { return m_steps; }
+    QImage frameImage() const { return m_img; }
     void setFramePath(const QString& path);
     void setPointerX(qreal x);
     void setPointerY(qreal y);
     void setLive(bool on);
     void setItemId(const QString& id);
     void setMediaDir(const QString& dir);
+    void setVideoVolume(qreal volume);
     void paint(QPainter* painter) override;
 
 signals:
@@ -53,6 +60,8 @@ signals:
     void pageUrlChanged();
     void statsChanged();
     void audioSamplesChanged();
+    void videoVolumeChanged();
+    void stepsChanged();
 
 private:
     void ensureTimer();
@@ -72,9 +81,11 @@ private:
     QString m_page;
     QString m_stats;
     QVariantList m_audio;
+    qreal m_vol = 0;
     Engine m_engine;
     QTimer* m_timer = nullptr;
     int m_frames = 0;
+    int m_steps = 0;
     long m_ticks = 0;
     qint64 m_mark = 0;
 };

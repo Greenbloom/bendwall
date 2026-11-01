@@ -1,0 +1,18 @@
+{
+  "general": {"orthogonalprojection": {"width": 160, "height": 90}},
+  "objects": [
+    {"name": "bg", "image": "textures/bg.png", "origin": "80 45 0", "size": "160 90 0"},
+    {
+      "name": "spark",
+      "particle": "particles/spark.json",
+      "origin": "24 45 0",
+      "angles": "0 0 0",
+      "scale": "1 1 1",
+      "alpha": 1,
+      "instanceoverride": {
+        "alpha": 1, "count": 1, "lifetime": 1, "rate": 1,
+        "size": 1, "speed": 1, "brightness": 1
+      }
+    }
+  ]
+}

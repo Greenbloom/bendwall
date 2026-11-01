@@ -17,6 +17,7 @@ struct Api {
     void* so = nullptr;
     int (*open)(const char*, int, int) = nullptr;
     void (*audio)(const float*, int) = nullptr;
+    void (*video_volume)(float) = nullptr;
     int (*step)(int) = nullptr;
     int (*rgba)(unsigned char*, int) = nullptr;
     int (*size)(int*, int*) = nullptr;
@@ -67,6 +68,7 @@ Api& api() {
     }
     a.open = sym<int (*)(const char*, int, int)>(a.so, "bw_play_open");
     a.audio = sym<void (*)(const float*, int)>(a.so, "bw_play_audio");
+    a.video_volume = sym<void (*)(float)>(a.so, "bw_play_set_video_volume");
     a.step = sym<int (*)(int)>(a.so, "bw_play_step");
     a.rgba = sym<int (*)(unsigned char*, int)>(a.so, "bw_play_rgba");
     a.size = sym<int (*)(int*, int*)>(a.so, "bw_play_size");
@@ -145,6 +147,13 @@ bool Engine::step(int dtMs) {
     if (!a.step) return false;
     m_ready = a.step(dtMs) == 1;
     return m_ready;
+}
+
+void Engine::setVideoVolume(float volume) {
+    Api& a = api();
+    if (volume < 0.f) volume = 0.f;
+    if (volume > 1.f) volume = 1.f;
+    if (a.video_volume) a.video_volume(volume);
 }
 
 void Engine::setAudio(const QVector<float>& interleaved) {

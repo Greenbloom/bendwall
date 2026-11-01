@@ -60,6 +60,8 @@ def main() -> IO(Unit):
     u2 : Unit <- one("spin", "build/fx-spin.png", tex)
     u3 : Unit <- one("opacity", "build/fx-opacity.png", tex)
     u4 : Unit <- one("colorkey", "build/fx-colorkey.png", tex)
+    u5 : Unit <- one("tint", "build/fx-tint.png", tex)
+    u6 : Unit <- one("pulse", "build/fx-pulse.png", tex)
     log : String <- GL.gl_log()
     IO.print("LOG")
     IO.print(log)

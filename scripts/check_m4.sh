@@ -23,6 +23,11 @@ QT_QPA_PLATFORM=offscreen ./build/kde/bendwall-preview --grab \
   "$PWD/build/m4-grab.png" "$PWD/build/kde"
 python3 tools/check_grab.py build/m4-grab.png
 python3 tools/check_webqml.py
+scripts/lib.sh
+export LIBGL_ALWAYS_SOFTWARE=1
+export BENDWALL_NATIVE="$PWD/host/libbendwall.so"
+./build/kde/bendwall-preview --play-frames "$PWD/fixtures/play/video" 8 > build/preview-play.out
+python3 tools/check_preview_play.py build/preview-play.out
 if [ -d /opt/cursor/artifacts ]; then
   cp -f build/m4-grab.png /opt/cursor/artifacts/m4-preview.png
 fi

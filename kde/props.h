@@ -6,3 +6,5 @@
 /* Presentation of project.json. Bend still resolves presets and user values. */
 QStringList propertyLines(const QString& projectPath);
 QStringList workshopIds(const QString& workshopRoot);
+QString workshopRoot();
+QString itemDirectory(const QString& id);

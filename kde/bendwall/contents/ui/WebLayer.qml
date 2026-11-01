@@ -9,12 +9,18 @@ Item {
     id: host
     anchors.fill: parent
 
+    property var liveAudio: []
+    property string livePage: ""
+    onLivePageChanged: view.url = pageUrl()
+
     function pageUrl() {
         try {
             if (wallpaperWebUrl && String(wallpaperWebUrl).length > 0)
                 return wallpaperWebUrl
         } catch (e) {
         }
+        if (livePage && livePage.length > 0)
+            return livePage
         return Qt.resolvedUrl("blank.html")
     }
 
@@ -28,11 +34,11 @@ Item {
     }
 
     function samples() {
-        var src = null
+        var src = liveAudio
         try {
-            src = wallpaperAudio
+            if (wallpaperAudio && wallpaperAudio.length)
+                src = wallpaperAudio
         } catch (e) {
-            src = null
         }
         var out = []
         var i
@@ -73,6 +79,8 @@ Item {
         anchors.fill: parent
         profile: profile
         url: host.pageUrl()
+        settings.localContentCanAccessFileUrls: true
+        settings.localContentCanAccessRemoteUrls: true
         onLoadingChanged: function (load) {
             if (load.status === WebEngineView.LoadSucceededStatus) {
                 host.pageReady = true

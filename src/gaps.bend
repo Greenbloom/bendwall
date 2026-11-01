@@ -557,6 +557,32 @@ def known.ck3(name: String, hit: Bool) -> Bool:
     case True{}:
       known.yes(name)
     case False{}:
+      known.tint2(pair(name))
+
+@unsafe
+def known.tint2(p: String & String) -> Bool:
+  (a, b) = p
+  known.tint3(b, String.eq(a, "tint"))
+
+@unsafe
+def known.tint3(name: String, hit: Bool) -> Bool:
+  match hit:
+    case True{}:
+      known.yes(name)
+    case False{}:
+      known.pulse2(pair(name))
+
+@unsafe
+def known.pulse2(p: String & String) -> Bool:
+  (a, b) = p
+  known.pulse3(b, String.eq(a, "pulse"))
+
+@unsafe
+def known.pulse3(name: String, hit: Bool) -> Bool:
+  match hit:
+    case True{}:
+      known.yes(name)
+    case False{}:
       known.no(name)
 
 @unsafe

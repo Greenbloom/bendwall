@@ -15,7 +15,7 @@ want = [
     "20 loaded",
     "21 loaded",
     "22 loaded",
-    "23 partial particle effect:tint effect:pulse",
+    "23 partial particle",
     "24 loaded",
     "26 loaded",
     "30 loaded",

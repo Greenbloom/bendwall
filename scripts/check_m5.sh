@@ -71,4 +71,5 @@ python3 tools/check_m3.py build/pkgscene.out build/pkgscene.png
 bend t_pkgmid.bend -o build/pkgmid
 ./build/pkgmid > build/pkgmid.out
 python3 tools/check_m3.py build/pkgmid.out build/pkgmid.png
+scripts/check_play.sh
 echo M5 PASS

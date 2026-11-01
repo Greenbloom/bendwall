@@ -7,32 +7,76 @@ Item {
 
     function wallpaperIsWeb() {
         try {
-            return wallpaperKind === "web"
+            if (wallpaperKind === "web")
+                return true
         } catch (e) {
-            return false
         }
+        return frame.kind === "web"
+    }
+
+    function currentId() {
+        try {
+            var configured = wallpaper.configuration.Item
+            if (configured && String(configured).length > 0)
+                return String(configured)
+        } catch (e) {
+        }
+        try {
+            if (wallpaperItem && String(wallpaperItem).length > 0)
+                return String(wallpaperItem)
+        } catch (e) {
+        }
+        var ids = Catalog.ids
+        return ids.length ? ids[0] : ""
+    }
+
+    function refresh() {
+        var id = currentId()
+        if (id !== frame.itemId)
+            frame.itemId = id
     }
 
     Frame {
         id: frame
         anchors.fill: parent
-        visible: !root.wallpaperIsWeb()
-        framePath: wallpaperFrame
+        live: true
+        visible: !root.wallpaperIsWeb() || webLoader.status !== Loader.Ready
+        framePath: {
+            try {
+                return wallpaperFrame
+            } catch (e) {
+                return ""
+            }
+        }
     }
 
     Loader {
+        id: webLoader
         anchors.fill: parent
         active: root.wallpaperIsWeb()
         source: "WebLayer.qml"
+        onLoaded: {
+            item.liveAudio = Qt.binding(function () { return frame.audioSamples })
+            item.livePage = Qt.binding(function () { return frame.pageUrl })
+        }
     }
 
     MouseArea {
         anchors.fill: parent
         hoverEnabled: true
-        enabled: !root.wallpaperIsWeb()
+        enabled: frame.visible
         onPositionChanged: function (mouse) {
             frame.pointerX = mouse.x
             frame.pointerY = mouse.y
         }
     }
+
+    Timer {
+        interval: 1000
+        repeat: true
+        running: true
+        onTriggered: root.refresh()
+    }
+
+    Component.onCompleted: root.refresh()
 }

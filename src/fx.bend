@@ -1,8 +1,9 @@
 import Base
 
-# Built-in passes for the four effect names a packed scene asked for.
-# Each fragment shader samples g_Texture0. Scroll wraps U by half a texture,
-# spin turns the layer 180 degrees, opacity halves alpha, colorkey drops red.
+# Built-in passes. Each fragment shader samples g_Texture0. Scroll wraps U
+# by half a texture, spin turns the layer 180 degrees, opacity halves alpha,
+# colorkey drops red. Tint keeps red and darkens green and blue. Pulse
+# multiplies rgb by 0.5 + 0.5*sin(g_Time), which is 0.5 when g_Time is 0.
 
 @unsafe
 def vert() -> String:
@@ -83,6 +84,32 @@ def frag.ck3(rest: String, hit: Bool) -> String:
     case True{}:
       frag.drop(rest, colorkey_fs())
     case False{}:
+      frag.tint2(pair(rest))
+
+@unsafe
+def frag.tint2(p: String & String) -> String:
+  (a, b) = p
+  frag.tint3(b, String.eq(a, "tint"))
+
+@unsafe
+def frag.tint3(rest: String, hit: Bool) -> String:
+  match hit:
+    case True{}:
+      frag.drop(rest, tint_fs())
+    case False{}:
+      frag.pulse2(pair(rest))
+
+@unsafe
+def frag.pulse2(p: String & String) -> String:
+  (a, b) = p
+  frag.pulse3(b, String.eq(a, "pulse"))
+
+@unsafe
+def frag.pulse3(rest: String, hit: Bool) -> String:
+  match hit:
+    case True{}:
+      frag.drop(rest, pulse_fs())
+    case False{}:
       frag.drop(rest, opacity_fs())
 
 @unsafe
@@ -100,3 +127,11 @@ def opacity_fs() -> String:
 @unsafe
 def colorkey_fs() -> String:
   "#version 330 core\nin vec2 v_TexCoord;\nuniform sampler2D g_Texture0;\nout vec4 fragColor;\nvoid main(){ vec4 c = texture(g_Texture0, v_TexCoord); float cut = step(0.5, c.r) * step(c.g, 0.1) * step(c.b, 0.1); fragColor = vec4(c.rgb, c.a * (1.0 - cut)); }\n"
+
+@unsafe
+def tint_fs() -> String:
+  "#version 330 core\nin vec2 v_TexCoord;\nuniform sampler2D g_Texture0;\nout vec4 fragColor;\nvoid main(){ vec4 c = texture(g_Texture0, v_TexCoord); fragColor = vec4(c.r, c.g * 0.35, c.b * 0.15, c.a); }\n"
+
+@unsafe
+def pulse_fs() -> String:
+  "#version 330 core\nin vec2 v_TexCoord;\nuniform sampler2D g_Texture0;\nuniform float g_Time;\nout vec4 fragColor;\nvoid main(){ vec4 c = texture(g_Texture0, v_TexCoord); float p = 0.5 + 0.5 * sin(g_Time); fragColor = vec4(c.rgb * p, c.a); }\n"

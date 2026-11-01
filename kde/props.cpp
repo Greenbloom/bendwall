@@ -1,5 +1,6 @@
 #include "props.h"
 
+#include <QByteArray>
 #include <QDir>
 #include <QFile>
 #include <QJsonArray>
@@ -42,6 +43,18 @@ QStringList propertyLines(const QString& path) {
         out << (name + "\t" + type + "\t" + showVal(o.value("value")) + "\t" + extra);
     }
     return out;
+}
+
+QString workshopRoot() {
+    const QByteArray env = qgetenv("BENDWALL_WORKSHOP");
+    if (!env.isEmpty()) return QString::fromLocal8Bit(env);
+    return QDir::homePath() + "/.local/share/Steam/steamapps/workshop/content/431960";
+}
+
+QString itemDirectory(const QString& id) {
+    if (id.isEmpty()) return QString();
+    if (id.startsWith(QLatin1Char('/'))) return id;
+    return workshopRoot() + QLatin1Char('/') + id;
 }
 
 QStringList workshopIds(const QString& root) {

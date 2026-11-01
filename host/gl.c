@@ -46,9 +46,20 @@ static uint32_t ubits(float f) {
 int bw_gl_prog(const char* vs, const char* fs);
 int bw_gl_bind(int which);
 int bw_gl_clear(void);
+int bw_gl_image(int tex, int w, int h, const uint8_t* px, int n);
+int bw_gl_fvn(int prog, const char* name, const float* v, int count);
+int bw_gl_read(uint8_t* dst, int n);
+int bw_gl_begin(void);
+int bw_gl_end(void);
+void bw_gl_shutdown(void);
 int bw_gl_quad(int prog, int tex,
     uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1,
     uint32_t u0, uint32_t v0, uint32_t u1, uint32_t v1);
+
+static EGLDisplay g_save_dpy;
+static EGLContext g_save_ctx;
+static EGLSurface g_save_draw, g_save_read;
+static int g_saved;
 
 static int make_target(int i) {
   glGenTextures(1, &g_ctex[i]);
@@ -68,6 +79,44 @@ static int make_target(int i) {
   return 1;
 }
 
+void bw_gl_shutdown(void) {
+  if (!g_ok) return;
+  eglMakeCurrent(g_dpy, g_surf, g_surf, g_ctx);
+  if (g_vbo) glDeleteBuffers(1, &g_vbo);
+  if (g_vao) glDeleteVertexArrays(1, &g_vao);
+  if (g_fbo[0] || g_fbo[1]) glDeleteFramebuffers(2, g_fbo);
+  if (g_ctex[0] || g_ctex[1]) glDeleteTextures(2, g_ctex);
+  eglMakeCurrent(g_dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+  if (g_ctx != EGL_NO_CONTEXT) eglDestroyContext(g_dpy, g_ctx);
+  if (g_surf != EGL_NO_SURFACE) eglDestroySurface(g_dpy, g_surf);
+  /* Leave the display up. Terminating it would take Qt's EGL down with it. */
+  g_ctx = EGL_NO_CONTEXT;
+  g_surf = EGL_NO_SURFACE;
+  g_ok = 0;
+  g_vao = g_vbo = 0;
+  g_fbo[0] = g_fbo[1] = g_ctex[0] = g_ctex[1] = 0;
+}
+
+int bw_gl_begin(void) {
+  if (!g_ok) return 0;
+  g_save_dpy = eglGetCurrentDisplay();
+  g_save_ctx = eglGetCurrentContext();
+  g_save_draw = eglGetCurrentSurface(EGL_DRAW);
+  g_save_read = eglGetCurrentSurface(EGL_READ);
+  g_saved = 1;
+  if (g_save_ctx == g_ctx) return 1;
+  if (!eglMakeCurrent(g_dpy, g_surf, g_surf, g_ctx)) { blog("make current"); return 0; }
+  return 1;
+}
+
+int bw_gl_end(void) {
+  if (!g_saved) return 1;
+  g_saved = 0;
+  if (g_save_ctx == EGL_NO_CONTEXT || g_save_ctx == g_ctx) return 1;
+  if (g_save_dpy == EGL_NO_DISPLAY) return 1;
+  return eglMakeCurrent(g_save_dpy, g_save_draw, g_save_read, g_save_ctx) ? 1 : 0;
+}
+
 int bw_gl_init(int w, int h) {
   EGLint major = 0, minor = 0, n = 0;
   EGLConfig cfg;
@@ -84,13 +133,16 @@ int bw_gl_init(int w, int h) {
     EGL_CONTEXT_OPENGL_PROFILE_MASK, EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT,
     EGL_NONE
   };
+  if (g_ok) bw_gl_shutdown();
   g_logn = 0;
   g_log[0] = 0;
   g_w = w;
   g_h = h;
-  g_dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
-  if (g_dpy == EGL_NO_DISPLAY) { blog("no display"); return 0; }
-  if (!eglInitialize(g_dpy, &major, &minor)) { blog("eglInitialize"); return 0; }
+  if (g_dpy == EGL_NO_DISPLAY) {
+    g_dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    if (g_dpy == EGL_NO_DISPLAY) { blog("no display"); return 0; }
+    if (!eglInitialize(g_dpy, &major, &minor)) { blog("eglInitialize"); return 0; }
+  }
   if (!eglChooseConfig(g_dpy, attr, &cfg, 1, &n) || n < 1) { blog("no config"); return 0; }
   if (!eglBindAPI(EGL_OPENGL_API)) { blog("bind api"); return 0; }
   g_surf = eglCreatePbufferSurface(g_dpy, cfg, pbuf);
@@ -141,17 +193,24 @@ int bw_gl_clear(void) {
 }
 
 int bw_gl_rgba(int w, int h, const uint8_t* px, int n) {
+  return bw_gl_image(0, w, h, px, n);
+}
+
+int bw_gl_image(int tex, int w, int h, const uint8_t* px, int n) {
   GLuint t;
   if (!g_ok || !px || n < w * h * 4 || w < 1 || h < 1) return 0;
-  glGenTextures(1, &t);
-  glBindTexture(GL_TEXTURE_2D, t);
+  if (tex <= 0) {
+    glGenTextures(1, &t);
+    tex = (int)t;
+  }
+  glBindTexture(GL_TEXTURE_2D, (GLuint)tex);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
   glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
   glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
-  return (int)t;
+  return tex;
 }
 
 static GLuint compile_one(GLenum type, const char* src) {
@@ -238,6 +297,32 @@ int bw_gl_fv(int prog, const char* name, uint32_t b0, uint32_t b1, uint32_t b2, 
   v[3] = fbits(b3);
   glUniform1fv(loc, 4, v);
   return 1;
+}
+
+int bw_gl_fvn(int prog, const char* name, const float* v, int count) {
+  GLint loc;
+  if (!g_ok || prog <= 0 || !name || !v || count < 1) return 0;
+  glUseProgram((GLuint)prog);
+  loc = glGetUniformLocation((GLuint)prog, name);
+  if (loc < 0) { blog("missing fvn"); blog(name); return 0; }
+  glUniform1fv(loc, count, v);
+  return 1;
+}
+
+int bw_gl_read(uint8_t* dst, int n) {
+  uint8_t* raw;
+  int y, stride;
+  if (!g_ok || !dst) return 0;
+  stride = g_w * 4;
+  if (n < stride * g_h) return 0;
+  raw = (uint8_t*)malloc((size_t)stride * (size_t)g_h);
+  if (!raw) return 0;
+  glPixelStorei(GL_PACK_ALIGNMENT, 1);
+  glReadPixels(0, 0, g_w, g_h, GL_RGBA, GL_UNSIGNED_BYTE, raw);
+  for (y = 0; y < g_h; y++)
+    memcpy(dst + (size_t)y * (size_t)stride, raw + (size_t)(g_h - 1 - y) * (size_t)stride, (size_t)stride);
+  free(raw);
+  return stride * g_h;
 }
 
 int bw_gl_px(int tex, int x, int y) {

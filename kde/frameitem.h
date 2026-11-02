@@ -22,6 +22,7 @@ class FrameItem : public QQuickFramebufferObject {
     Q_PROPERTY(QString kind READ kind NOTIFY kindChanged)
     Q_PROPERTY(QString pageUrl READ pageUrl NOTIFY pageUrlChanged)
     Q_PROPERTY(QString statsText READ statsText NOTIFY statsChanged)
+    Q_PROPERTY(QString playerLine READ playerLine NOTIFY statsChanged)
     Q_PROPERTY(QVariantList audioSamples READ audioSamples NOTIFY audioSamplesChanged)
     Q_PROPERTY(qreal videoVolume READ videoVolume WRITE setVideoVolume NOTIFY videoVolumeChanged)
     Q_PROPERTY(bool videoMuted READ videoMuted WRITE setVideoMuted NOTIFY videoMutedChanged)
@@ -40,6 +41,7 @@ public:
     QString kind() const { return m_kind; }
     QString pageUrl() const { return m_page; }
     QString statsText() const { return m_stats; }
+    QString playerLine() const { return m_engine.line(); }
     QVariantList audioSamples() const { return m_audio; }
     qreal videoVolume() const { return m_vol; }
     bool videoMuted() const { return m_mute; }

@@ -2,7 +2,8 @@ cmake_minimum_required(VERSION 3.16)
 project(bendwall LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_AUTOMOC ON)
-find_package(Qt6 REQUIRED COMPONENTS Quick Qml Gui OpenGL)
+set(CMAKE_AUTORCC ON)
+find_package(Qt6 REQUIRED COMPONENTS Quick Qml Gui OpenGL DBus)
 find_package(Qt6 QUIET COMPONENTS WebEngineQuick)
 
 add_library(bendwallplugin SHARED frameitem.cpp plugin.cpp engine.cpp catalog.cpp props.cpp)
@@ -22,3 +23,10 @@ endif()
 
 file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/module/qmldir
      DESTINATION ${CMAKE_BINARY_DIR}/com/philip/bendwall)
+
+add_executable(bendwall-picker
+    picker.cpp library.cpp shellconfig.cpp
+    frameitem.cpp engine.cpp props.cpp
+    picker.qrc)
+target_link_libraries(bendwall-picker PRIVATE Qt6::Quick Qt6::Qml Qt6::Gui Qt6::OpenGL Qt6::DBus)
+target_link_libraries(bendwall-picker PRIVATE ${CMAKE_DL_LIBS})

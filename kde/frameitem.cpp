@@ -247,6 +247,7 @@ void FrameItem::tick() {
         m_page = m_engine.page();
         emit kindChanged();
         emit pageUrlChanged();
+        emit statsChanged();
     }
     m_engine.setPointer((float)m_px, (float)m_py, (float)w, (float)h, m_havePtr);
     if (m_engine.step(33)) {

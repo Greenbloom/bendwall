@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Bendwall Picker
+Comment=Choose a Bendwall wallpaper
+Exec=bendwall-picker
+Icon=bendwall
+Terminal=false
+Categories=Utility;Settings;Qt;
+StartupWMClass=bendwall-picker

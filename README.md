@@ -155,7 +155,22 @@ Plasma reads `~/.config/plasma-workspace/env/*.sh` at login, not when a shell st
 5. A video item plays in the wallpaper. A web item loads in Qt WebEngine. The top-left corner reads `fps`, CPU percent, and the item kind (`video`, `scene`, `web`, or `demo`). The numbers use a dot, including when `LC_NUMERIC` is `de_DE.UTF-8`.
 6. A video item plays its picture. The soundtrack stays off until **Mute video** is unticked. The volume slider starts at 100, which is the level you hear after that. Set the slider to 0 to mute it again. **Mute when other apps play audio or go fullscreen** starts off. An unmuted wallpaper keeps playing while another app has audio. Turn that checkbox on to duck the track.
 
-The same page is the preview, which does not need a Plasma session or a logout:
+### Pick a wallpaper
+
+`bendwall-picker` is a separate window. `scripts/install.sh` copies it to `~/.local/bin/bendwall-picker` and adds a launcher named **Bendwall Picker**.
+
+The window reads Steam `libraryfolders.vdf` and lists `steamapps/workshop/content/431960` from each library. It also reads `BENDWALL_WORKSHOP` and `~/.local/share/Steam/steamapps/workshop/content/431960`. Each card uses that item's `preview.jpg`, `preview.png`, or `preview.gif`. A gif plays while the pointer is on the card. Thumbnails are cached under the picker cache directory.
+
+Choose a card. The pane on the right plays that wallpaper through the same player as the desktop, with the soundtrack muted. If the player does not start, or the item is an application, a preset, or missing its file, the pane keeps the preview image and says why. It does not draw a stand-in animation.
+
+**Apply** writes the Plasma wallpaper for **All screens** or one screen. It sets the plugin to `com.philip.bendwall` and the **Item** key to that folder name, plus **Mute video**, the volume, and **Mute when other apps play audio or go fullscreen**. That is the same config the desktop settings page stores. Plasmashell has to be running. A card marked **Screen 0** is the wallpaper already set on that screen.
+
+```sh
+build/kde/bendwall-picker
+build/kde/bendwall-picker --workshop /path/to/one/workshop/folder
+```
+
+`bendwall-preview` does not need a Plasma session or a logout:
 
 ```sh
 export BENDWALL_NATIVE="$PWD/host/libbendwall.so"

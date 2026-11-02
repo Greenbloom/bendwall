@@ -82,6 +82,18 @@ WallpaperItem {
                 return !root.videoOptIn()
             }
         }
+        videoAutoMute: {
+            try {
+                var a = configuration.AutoMuteOthers
+                if (a === undefined || a === null || a === "")
+                    return false
+                if (a === true || a === 1 || a === "true" || a === "1")
+                    return true
+                return false
+            } catch (e) {
+                return false
+            }
+        }
         visible: !root.wallpaperIsWeb() || webLoader.status !== Loader.Ready
         framePath: {
             try {

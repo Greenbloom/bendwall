@@ -17,5 +17,9 @@
       <label>Mute video</label>
       <default>true</default>
     </entry>
+    <entry name="AutoMuteOthers" type="Bool">
+      <label>Mute when other apps play audio or go fullscreen</label>
+      <default>false</default>
+    </entry>
   </group>
 </kcfg>

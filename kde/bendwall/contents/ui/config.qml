@@ -11,6 +11,7 @@ Column {
     property string cfg_Item: ""
     property int cfg_VideoVolume: 100
     property bool cfg_VideoMute: true
+    property bool cfg_AutoMuteOthers: false
 
     function idList() {
         try {
@@ -78,7 +79,7 @@ Column {
     }
 
     Text {
-        text: "Off until Mute video is unticked. 100 is then the video's own level, and 0 mutes it as well. The track also mutes while another app is fullscreen or playing audio."
+        text: "Off until Mute video is unticked. 100 is then the video's own level, and 0 mutes it as well."
         color: "#9a958c"
         font.pixelSize: 11
         width: 236
@@ -108,10 +109,26 @@ Column {
         onClicked: column.cfg_VideoMute = checked
     }
 
+    CheckBox {
+        id: autoMuteBox
+        text: "Mute when other apps play audio or go fullscreen"
+        checked: column.cfg_AutoMuteOthers
+        onClicked: column.cfg_AutoMuteOthers = checked
+    }
+
+    Text {
+        text: "When this is on, the track also mutes while another app is fullscreen or playing audio."
+        color: "#9a958c"
+        font.pixelSize: 11
+        width: 236
+        wrapMode: Text.Wrap
+    }
+
     onCfg_ItemChanged: applyCfg()
     onCfg_VideoVolumeChanged: {
         if (Math.round(volume.value) !== cfg_VideoVolume)
             volume.value = cfg_VideoVolume
     }
     onCfg_VideoMuteChanged: muteBox.checked = cfg_VideoMute
+    onCfg_AutoMuteOthersChanged: autoMuteBox.checked = cfg_AutoMuteOthers
 }

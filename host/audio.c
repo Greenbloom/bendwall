@@ -51,7 +51,10 @@ int bw_audio_capture(float* dst, int n) {
 
    The live read is not the default sink monitor. That monitor includes the
    soundtrack this process plays, which would feed the spectrum. The thread
-   records one other sink-input, and ignores application.name bendwall-video. */
+   records one other sink-input. Corked inputs are skipped. Bendwall's own
+   playback is skipped too, or a duck would treat the wallpaper as another
+   app and silence it. Own playback is application.id com.philip.bendwall,
+   application.name Bendwall, or the old name bendwall-video. */
 #include <dlfcn.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -64,6 +67,7 @@ int bw_audio_capture(float* dst, int n) {
 #include <pulse/mainloop.h>
 #include <pulse/proplist.h>
 #include <pulse/stream.h>
+#include <pulse/thread-mainloop.h>
 
 static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 static volatile sig_atomic_t g_stop;
@@ -76,7 +80,9 @@ static int g_use_inject;
 static volatile sig_atomic_t g_others;
 
 static pthread_mutex_t g_play_mu = PTHREAD_MUTEX_INITIALIZER;
-static pa_simple* g_play;
+static pa_threaded_mainloop* g_play_ml;
+static pa_context* g_play_ctx;
+static pa_stream* g_play_st;
 static int g_play_failed;
 
 typedef struct SpecScan {
@@ -88,17 +94,28 @@ typedef struct SpecScan {
   char mon[256];
 } SpecScan;
 
+static int input_is_ours(const pa_proplist* pl) {
+  const char* name;
+  const char* id;
+  if (!pl) return 0;
+  id = pa_proplist_gets(pl, PA_PROP_APPLICATION_ID);
+  if (id && strcmp(id, "com.philip.bendwall") == 0) return 1;
+  name = pa_proplist_gets(pl, PA_PROP_APPLICATION_NAME);
+  if (!name) return 0;
+  if (strcmp(name, "Bendwall") == 0) return 1;
+  if (strcmp(name, "bendwall-video") == 0) return 1;
+  return 0;
+}
+
 static void on_input(pa_context* c, const pa_sink_input_info* i, int eol, void* ud) {
   SpecScan* s = ud;
-  const char* app;
   (void)c;
   if (eol) {
     s->list_done = 1;
     return;
   }
   if (!i || i->corked) return;
-  app = i->proplist ? pa_proplist_gets(i->proplist, PA_PROP_APPLICATION_NAME) : NULL;
-  if (app && strcmp(app, "bendwall-video") == 0) return;
+  if (input_is_ours(i->proplist)) return;
   s->others = 1;
   if (s->idx == PA_INVALID_INDEX) {
     s->idx = i->index;
@@ -341,11 +358,169 @@ int bw_wm_fullscreen(void) {
   return yes;
 }
 
-int bw_audio_play_write(const float* interleaved, int nfloats) {
+static pa_proplist* play_props(void) {
+  pa_proplist* pl = pa_proplist_new();
+  if (!pl) return NULL;
+  pa_proplist_sets(pl, PA_PROP_APPLICATION_NAME, "Bendwall");
+  pa_proplist_sets(pl, PA_PROP_APPLICATION_ID, "com.philip.bendwall");
+  pa_proplist_sets(pl, PA_PROP_APPLICATION_ICON_NAME, "preferences-desktop-wallpaper");
+  pa_proplist_sets(pl, PA_PROP_MEDIA_ROLE, "music");
+  pa_proplist_sets(pl, PA_PROP_MEDIA_NAME, "Wallpaper");
+  return pl;
+}
+
+/* This libpulse has pa_threaded_mainloop_wait and no timed wait.
+   Sleep outside the lock so a dead server cannot hang the wallpaper. */
+static int wait_play(pa_threaded_mainloop* ml, int (*state_of)(void*), int ready, int dead1, int dead2, void* obj) {
+  int i;
+  for (i = 0; i < 200; i++) {
+    int st;
+    pa_threaded_mainloop_lock(ml);
+    st = state_of(obj);
+    pa_threaded_mainloop_unlock(ml);
+    if (st == ready) return 1;
+    if (st == dead1 || st == dead2) return 0;
+    usleep(5000);
+  }
+  return 0;
+}
+
+static int ctx_state(void* obj) { return (int)pa_context_get_state(obj); }
+
+static int stream_state(void* obj) { return (int)pa_stream_get_state(obj); }
+
+static void play_shutdown(pa_threaded_mainloop* ml, pa_context* ctx, pa_stream* st) {
+  if (!ml) return;
+  pa_threaded_mainloop_lock(ml);
+  if (st) {
+    if (pa_stream_get_state(st) != PA_STREAM_UNCONNECTED && pa_stream_get_state(st) != PA_STREAM_TERMINATED)
+      pa_stream_disconnect(st);
+    pa_stream_unref(st);
+  }
+  if (ctx) {
+    if (pa_context_get_state(ctx) != PA_CONTEXT_UNCONNECTED && pa_context_get_state(ctx) != PA_CONTEXT_TERMINATED)
+      pa_context_disconnect(ctx);
+    pa_context_unref(ctx);
+  }
+  pa_threaded_mainloop_unlock(ml);
+  pa_threaded_mainloop_stop(ml);
+  pa_threaded_mainloop_free(ml);
+}
+
+static int play_connect(void) {
+  pa_threaded_mainloop* ml;
+  pa_context* ctx = NULL;
+  pa_stream* st = NULL;
+  pa_proplist* pl;
   pa_sample_spec ss;
   pa_buffer_attr attr;
-  struct sigaction sa, old;
-  int err = 0;
+  int rc;
+  ml = pa_threaded_mainloop_new();
+  if (!ml) return 0;
+  if (pa_threaded_mainloop_start(ml) < 0) {
+    pa_threaded_mainloop_free(ml);
+    return 0;
+  }
+  pl = play_props();
+  if (!pl) {
+    pa_threaded_mainloop_stop(ml);
+    pa_threaded_mainloop_free(ml);
+    return 0;
+  }
+  pa_threaded_mainloop_lock(ml);
+  ctx = pa_context_new_with_proplist(pa_threaded_mainloop_get_api(ml), "Bendwall", pl);
+  if (!ctx) {
+    pa_threaded_mainloop_unlock(ml);
+    pa_proplist_free(pl);
+    pa_threaded_mainloop_stop(ml);
+    pa_threaded_mainloop_free(ml);
+    return 0;
+  }
+  rc = pa_context_connect(ctx, NULL, PA_CONTEXT_NOAUTOSPAWN, NULL);
+  pa_threaded_mainloop_unlock(ml);
+  if (rc < 0 || !wait_play(ml, ctx_state, PA_CONTEXT_READY, PA_CONTEXT_FAILED, PA_CONTEXT_TERMINATED, ctx)) {
+    pa_proplist_free(pl);
+    play_shutdown(ml, ctx, NULL);
+    return 0;
+  }
+  memset(&ss, 0, sizeof ss);
+  ss.format = PA_SAMPLE_FLOAT32LE;
+  ss.rate = 44100;
+  ss.channels = 2;
+  memset(&attr, 0, sizeof attr);
+  attr.maxlength = (uint32_t)-1;
+  attr.tlength = (uint32_t)(44100 / 5 * 2 * sizeof(float));
+  attr.prebuf = (uint32_t)-1;
+  attr.minreq = (uint32_t)-1;
+  attr.fragsize = (uint32_t)-1;
+  pa_threaded_mainloop_lock(ml);
+  st = pa_stream_new_with_proplist(ctx, "Wallpaper", &ss, NULL, pl);
+  pa_proplist_free(pl);
+  if (!st) {
+    pa_threaded_mainloop_unlock(ml);
+    play_shutdown(ml, ctx, NULL);
+    return 0;
+  }
+  rc = pa_stream_connect_playback(st, NULL, &attr, 0, NULL, NULL);
+  pa_threaded_mainloop_unlock(ml);
+  if (rc < 0 || !wait_play(ml, stream_state, PA_STREAM_READY, PA_STREAM_FAILED, PA_STREAM_TERMINATED, st)) {
+    play_shutdown(ml, ctx, st);
+    return 0;
+  }
+  g_play_ml = ml;
+  g_play_ctx = ctx;
+  g_play_st = st;
+  return 1;
+}
+
+static void play_fail(void) {
+  pa_threaded_mainloop* ml = g_play_ml;
+  pa_context* ctx = g_play_ctx;
+  pa_stream* st = g_play_st;
+  g_play_ml = NULL;
+  g_play_ctx = NULL;
+  g_play_st = NULL;
+  g_play_failed = 1;
+  if (ml) play_shutdown(ml, ctx, st);
+}
+
+static int play_send(const float* data, int nfloats) {
+  size_t need = (size_t)nfloats * sizeof(float);
+  int spins = 0;
+  for (;;) {
+    pa_stream_state_t sst;
+    size_t room;
+    pa_threaded_mainloop_lock(g_play_ml);
+    sst = pa_stream_get_state(g_play_st);
+    if (sst == PA_STREAM_FAILED || sst == PA_STREAM_TERMINATED) {
+      pa_threaded_mainloop_unlock(g_play_ml);
+      play_fail();
+      return 0;
+    }
+    room = pa_stream_writable_size(g_play_st);
+    if (room == (size_t)-1) {
+      pa_threaded_mainloop_unlock(g_play_ml);
+      play_fail();
+      return 0;
+    }
+    if (room >= need) {
+      int wr = pa_stream_write(g_play_st, data, need, NULL, 0, PA_SEEK_RELATIVE);
+      pa_threaded_mainloop_unlock(g_play_ml);
+      if (wr < 0) {
+        play_fail();
+        return 0;
+      }
+      return 1;
+    }
+    pa_threaded_mainloop_unlock(g_play_ml);
+    if (spins >= 10) return 0;
+    usleep(5000);
+    spins++;
+  }
+}
+
+int bw_audio_play_write(const float* interleaved, int nfloats) {
+  int ok;
   if (!interleaved || nfloats < 2) return 0;
   if (nfloats & 1) nfloats--;
   pthread_mutex_lock(&g_play_mu);
@@ -353,56 +528,39 @@ int bw_audio_play_write(const float* interleaved, int nfloats) {
     pthread_mutex_unlock(&g_play_mu);
     return 0;
   }
-  if (!g_play) {
-    memset(&ss, 0, sizeof ss);
-    ss.format = PA_SAMPLE_FLOAT32LE;
-    ss.rate = 44100;
-    ss.channels = 2;
-    memset(&attr, 0, sizeof attr);
-    attr.maxlength = (uint32_t)-1;
-    attr.tlength = (uint32_t)(44100 / 10 * 2 * sizeof(float));
-    attr.prebuf = attr.tlength;
-    attr.minreq = (uint32_t)-1;
-    memset(&sa, 0, sizeof sa);
-    sa.sa_handler = bw_alrm;
-    sigemptyset(&sa.sa_mask);
-    sigaction(SIGALRM, &sa, &old);
-    alarm(1);
-    g_play = pa_simple_new(NULL, "bendwall-video", PA_STREAM_PLAYBACK, NULL, "video", &ss, NULL, &attr, &err);
-    alarm(0);
-    sigaction(SIGALRM, &old, NULL);
-    if (!g_play) {
+  if (!g_play_st) {
+    if (!play_connect()) {
       g_play_failed = 1;
       pthread_mutex_unlock(&g_play_mu);
       return 0;
     }
   }
-  if (pa_simple_write(g_play, interleaved, (size_t)nfloats * sizeof(float), &err) < 0) {
-    pa_simple_free(g_play);
-    g_play = NULL;
-    g_play_failed = 1;
-    pthread_mutex_unlock(&g_play_mu);
-    return 0;
-  }
+  ok = play_send(interleaved, nfloats);
   pthread_mutex_unlock(&g_play_mu);
-  return 1;
+  return ok;
 }
 
 int bw_audio_play_active(void) {
   int on;
   pthread_mutex_lock(&g_play_mu);
-  on = g_play != NULL;
+  on = g_play_st != NULL;
   pthread_mutex_unlock(&g_play_mu);
   return on;
 }
 
 void bw_audio_play_stop(void) {
+  pa_threaded_mainloop* ml;
+  pa_context* ctx;
+  pa_stream* st;
   pthread_mutex_lock(&g_play_mu);
-  if (g_play) {
-    pa_simple_free(g_play);
-    g_play = NULL;
-  }
+  ml = g_play_ml;
+  ctx = g_play_ctx;
+  st = g_play_st;
+  g_play_ml = NULL;
+  g_play_ctx = NULL;
+  g_play_st = NULL;
   g_play_failed = 0;
+  if (ml) play_shutdown(ml, ctx, st);
   pthread_mutex_unlock(&g_play_mu);
 }
 

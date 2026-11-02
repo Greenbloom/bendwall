@@ -19,6 +19,7 @@ struct Api {
     void (*audio)(const float*, int) = nullptr;
     void (*video_volume)(float) = nullptr;
     void (*video_mute)(int) = nullptr;
+    void (*video_duck)(int) = nullptr;
     int (*step)(int) = nullptr;
     int (*rgba)(unsigned char*, int) = nullptr;
     int (*size)(int*, int*) = nullptr;
@@ -76,6 +77,7 @@ Api& api() {
     a.audio = sym<void (*)(const float*, int)>(a.so, "bw_play_audio");
     a.video_volume = sym<void (*)(float)>(a.so, "bw_play_set_video_volume");
     a.video_mute = sym<void (*)(int)>(a.so, "bw_play_set_video_mute");
+    a.video_duck = sym<void (*)(int)>(a.so, "bw_play_set_video_duck");
     a.step = sym<int (*)(int)>(a.so, "bw_play_step");
     a.rgba = sym<int (*)(unsigned char*, int)>(a.so, "bw_play_rgba");
     a.size = sym<int (*)(int*, int*)>(a.so, "bw_play_size");
@@ -171,6 +173,11 @@ void Engine::setVideoVolume(float volume) {
 void Engine::setVideoMute(bool on) {
     Api& a = api();
     if (a.video_mute) a.video_mute(on ? 1 : 0);
+}
+
+void Engine::setVideoDuck(int mode) {
+    Api& a = api();
+    if (a.video_duck) a.video_duck(mode);
 }
 
 void Engine::setReadback(bool on) {

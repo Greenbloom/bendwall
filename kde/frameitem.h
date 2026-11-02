@@ -25,6 +25,7 @@ class FrameItem : public QQuickFramebufferObject {
     Q_PROPERTY(QVariantList audioSamples READ audioSamples NOTIFY audioSamplesChanged)
     Q_PROPERTY(qreal videoVolume READ videoVolume WRITE setVideoVolume NOTIFY videoVolumeChanged)
     Q_PROPERTY(bool videoMuted READ videoMuted WRITE setVideoMuted NOTIFY videoMutedChanged)
+    Q_PROPERTY(bool videoAutoMute READ videoAutoMute WRITE setVideoAutoMute NOTIFY videoAutoMuteChanged)
     Q_PROPERTY(int steps READ steps NOTIFY stepsChanged)
     Q_PROPERTY(QImage frameImage READ frameImage)
 
@@ -42,6 +43,7 @@ public:
     QVariantList audioSamples() const { return m_audio; }
     qreal videoVolume() const { return m_vol; }
     bool videoMuted() const { return m_mute; }
+    bool videoAutoMute() const { return m_auto; }
     int steps() const { return m_steps; }
     QImage frameImage() const;
     void setFramePath(const QString& path);
@@ -52,6 +54,7 @@ public:
     void setMediaDir(const QString& dir);
     void setVideoVolume(qreal volume);
     void setVideoMuted(bool on);
+    void setVideoAutoMute(bool on);
     Renderer* createRenderer() const override;
 
     Engine* engine() { return &m_engine; }
@@ -70,6 +73,7 @@ signals:
     void audioSamplesChanged();
     void videoVolumeChanged();
     void videoMutedChanged();
+    void videoAutoMuteChanged();
     void stepsChanged();
 
 private:
@@ -92,6 +96,7 @@ private:
     QVariantList m_audio;
     qreal m_vol = 1;
     bool m_mute = true;
+    bool m_auto = false;
     Engine m_engine;
     QTimer* m_timer = nullptr;
     int m_frames = 0;

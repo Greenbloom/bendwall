@@ -185,6 +185,13 @@ void FrameItem::setVideoMuted(bool on) {
     emit videoMutedChanged();
 }
 
+void FrameItem::setVideoAutoMute(bool on) {
+    if (m_auto == on) return;
+    m_auto = on;
+    m_engine.setVideoDuck(m_auto ? -1 : 0);
+    emit videoAutoMuteChanged();
+}
+
 void FrameItem::ensureTimer() {
     if (!m_timer) {
         m_timer = new QTimer(this);
@@ -223,6 +230,9 @@ void FrameItem::tick() {
     if (w < 8 || h < 8) return;
     m_engine.setVideoVolume((float)m_vol);
     m_engine.setVideoMute(m_mute);
+    /* The soundtrack thread starts inside open. The setter skips a value
+       that did not change, so each tick applies the policy before open. */
+    m_engine.setVideoDuck(m_auto ? -1 : 0);
     m_engine.setReadback(false);
     if (!m_engine.ready()) {
         QString dir = m_dir;

@@ -94,6 +94,25 @@ if "wallpaper.configuration" in main:
     raise SystemExit("main.qml still uses wallpaper.configuration")
 if "configuration.Item" not in main or "configuration.VideoVolume" not in main or "configuration.VideoMute" not in main:
     raise SystemExit("main.qml does not read configuration")
+k = xml.find('name="AutoMuteOthers"')
+chunk = xml[k:k + 400] if k >= 0 else ""
+if k < 0 or 'type="Bool"' not in chunk or "<default>false</default>" not in chunk:
+    raise SystemExit("AutoMuteOthers is not a Bool defaulting to false")
+if "Mute when other apps play audio or go fullscreen" not in chunk:
+    raise SystemExit("AutoMuteOthers label")
+if "property bool cfg_AutoMuteOthers: false" not in qml:
+    raise SystemExit("config.qml missing cfg_AutoMuteOthers")
+if 'text: "Mute when other apps play audio or go fullscreen"' not in qml:
+    raise SystemExit("checkbox label")
+vol = qml.split("Video volume", 1)[1].split("Slider", 1)[0]
+if "also mutes" in vol or "fullscreen" in vol or "playing audio" in vol:
+    raise SystemExit("volume help still says the track mutes for other apps")
+if "Off until Mute video is unticked. 100 is then the video's own level, and 0 mutes it as well." not in vol:
+    raise SystemExit("volume help text")
+if "When this is on, the track also mutes while another app is fullscreen or playing audio." not in qml:
+    raise SystemExit("checkbox help")
+if "configuration.AutoMuteOthers" not in main:
+    raise SystemExit("main.qml does not read configuration.AutoMuteOthers")
 import re
 if not re.search(r"(?m)^WallpaperItem\s*\{", main):
     raise SystemExit("main.qml root is not WallpaperItem")

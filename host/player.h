@@ -13,7 +13,9 @@ void bw_play_set_video_volume(float volume);
 float bw_play_video_volume(void);
 /* Plasma mute. The default is on, so a soundtrack is opt-in. */
 void bw_play_set_video_mute(int on);
-/* -1 duck when another app is fullscreen or playing audio, 0 never, 1 force. */
+/* 0 never ducks. That is the default. -1 ducks when another app is
+   fullscreen or playing audio, unless BENDWALL_VIDEO_DUCK=0. Plasma
+   AutoMuteOthers sets -1. 1 forces silence. */
 void bw_play_set_video_duck(int mode);
 /* Last soundtrack samples after volume, mute, and duck. Not the spectrum. */
 int bw_play_video_pcm(float* dst, int cap);

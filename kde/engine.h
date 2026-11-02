@@ -16,6 +16,8 @@ public:
     /* 0..1. The default the player uses is 1. 0 mutes the soundtrack. */
     void setVideoVolume(float volume);
     void setVideoMute(bool on);
+    /* 0 never, -1 duck, 1 force. A missing bw_play_set_video_duck is ignored. */
+    void setVideoDuck(int mode);
     /* Live frames skip glReadPixels. Grabs leave this on. */
     void setReadback(bool on);
     void setPointer(float x, float y, float itemW, float itemH, bool valid);

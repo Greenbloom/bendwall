@@ -140,7 +140,7 @@ static float g_video_vol = 1.f;
 static float g_proj_vol = 1.f;
 static int g_user_mute = 1;
 static int g_proj_mute;
-static int g_duck = -1;
+static int g_duck = 0;
 static pthread_mutex_t g_gain_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t g_play_mu = PTHREAD_MUTEX_INITIALIZER;
 static int g_uni;

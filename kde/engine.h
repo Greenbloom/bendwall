@@ -18,6 +18,10 @@ public:
     void setVideoMute(bool on);
     /* 0 never, -1 duck, 1 force. A missing bw_play_set_video_duck is ignored. */
     void setVideoDuck(int mode);
+    /* Share one decoded frame across screens, and do not outrun the display. */
+    void setPace(bool on);
+    void setRefresh(int hz);
+    int paceMs() const;
     /* Live frames skip glReadPixels. Grabs leave this on. */
     void setReadback(bool on);
     void setPointer(float x, float y, float itemW, float itemH, bool valid);
@@ -35,6 +39,8 @@ public:
 private:
     bool load();
     bool m_ready = false;
+    bool m_hold = false;
+    int m_gen = 0;
     QString m_err;
 };
 

@@ -30,6 +30,18 @@ int bw_play_audio_out(float* dst128);
 int bw_play_band(int which, int index, float* out);
 int bw_play_png(const char* path);
 void bw_play_close(void);
+/* Drops one reference from bw_play_open. A stale generation is a no-op,
+   so one screen can reload without tearing down the other screen's player. */
+int bw_play_generation(void);
+void bw_play_release(int generation);
+/* Live wallpaper pacing. Off by default, so a large step still catches up.
+   On, two callers in the same refresh share one decoded frame, and the
+   picture does not advance faster than the display. */
+void bw_play_set_pace(int on);
+void bw_play_set_refresh(int hz);
+int bw_play_pace_ms(void);
+/* CPU time inside the video decoder, in microseconds, and the path name. */
+void bw_play_video_cost(int* cpu_us, int* frames, char* how, int how_n);
 /* 0 skips glReadPixels. The default is on, so grabs and tests keep pixels.
    The live window turns it off and samples the color texture instead. */
 void bw_play_set_readback(int on);

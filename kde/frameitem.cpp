@@ -3,6 +3,7 @@
 #include "props.h"
 
 #include <QDateTime>
+#include <QScreen>
 #include <QQuickWindow>
 #include <QOpenGLBuffer>
 #include <QOpenGLContext>
@@ -248,6 +249,20 @@ void FrameItem::tick() {
         emit kindChanged();
         emit pageUrlChanged();
         emit statsChanged();
+    }
+    if (m_kind == QLatin1String("video")) {
+        int hz = 60;
+        if (window() && window()->screen()) {
+            const qreal rate = window()->screen()->refreshRate();
+            if (rate >= 20.0 && rate <= 360.0) hz = (int)(rate + 0.5);
+        }
+        m_engine.setRefresh(hz);
+        m_engine.setPace(true);
+        const int ms = m_engine.paceMs();
+        if (m_timer && m_timer->interval() != ms) m_timer->setInterval(ms);
+    } else {
+        m_engine.setPace(false);
+        if (m_timer && m_timer->interval() != 33) m_timer->setInterval(33);
     }
     m_engine.setPointer((float)m_px, (float)m_py, (float)w, (float)h, m_havePtr);
     if (m_engine.step(33)) {

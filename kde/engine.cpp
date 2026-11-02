@@ -20,6 +20,11 @@ struct Api {
     void (*video_volume)(float) = nullptr;
     void (*video_mute)(int) = nullptr;
     void (*video_duck)(int) = nullptr;
+    void (*pace)(int) = nullptr;
+    void (*refresh)(int) = nullptr;
+    int (*pace_ms)() = nullptr;
+    int (*generation)() = nullptr;
+    void (*release)(int) = nullptr;
     int (*step)(int) = nullptr;
     int (*rgba)(unsigned char*, int) = nullptr;
     int (*size)(int*, int*) = nullptr;
@@ -78,6 +83,11 @@ Api& api() {
     a.video_volume = sym<void (*)(float)>(a.so, "bw_play_set_video_volume");
     a.video_mute = sym<void (*)(int)>(a.so, "bw_play_set_video_mute");
     a.video_duck = sym<void (*)(int)>(a.so, "bw_play_set_video_duck");
+    a.pace = sym<void (*)(int)>(a.so, "bw_play_set_pace");
+    a.refresh = sym<void (*)(int)>(a.so, "bw_play_set_refresh");
+    a.pace_ms = sym<int (*)()>(a.so, "bw_play_pace_ms");
+    a.generation = sym<int (*)()>(a.so, "bw_play_generation");
+    a.release = sym<void (*)(int)>(a.so, "bw_play_release");
     a.step = sym<int (*)(int)>(a.so, "bw_play_step");
     a.rgba = sym<int (*)(unsigned char*, int)>(a.so, "bw_play_rgba");
     a.size = sym<int (*)(int*, int*)>(a.so, "bw_play_size");
@@ -143,17 +153,41 @@ bool Engine::load() {
 
 bool Engine::open(const QString& dir, int w, int h) {
     if (!load()) return false;
+    if (m_hold) close();
     Api& a = api();
     const QByteArray utf = dir.toUtf8();
     m_ready = a.open(utf.constData(), w, h) == 1;
+    m_hold = m_ready;
+    m_gen = (m_hold && a.generation) ? a.generation() : 0;
     if (!m_ready) m_err = QString::fromUtf8(a.line ? a.line() : "open failed");
     return m_ready;
 }
 
 void Engine::close() {
     Api& a = api();
-    if (a.close) a.close();
+    if (m_hold) {
+        if (a.release) a.release(m_gen);
+        else if (a.close) a.close();
+    }
+    m_hold = false;
     m_ready = false;
+}
+
+void Engine::setPace(bool on) {
+    Api& a = api();
+    if (a.pace) a.pace(on ? 1 : 0);
+}
+
+void Engine::setRefresh(int hz) {
+    Api& a = api();
+    if (a.refresh) a.refresh(hz);
+}
+
+int Engine::paceMs() const {
+    Api& a = api();
+    if (!a.pace_ms) return 33;
+    const int ms = a.pace_ms();
+    return ms > 0 ? ms : 33;
 }
 
 bool Engine::step(int dtMs) {

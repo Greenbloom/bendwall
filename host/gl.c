@@ -692,6 +692,67 @@ int bw_gl_image(int tex, int w, int h, const uint8_t* px, int n) {
   return tex;
 }
 
+int bw_gl_plane(int tex, int w, int h, const uint8_t* px, int comps) {
+  GLuint t;
+  GLenum fmt, internal;
+  if (!g_ok || !px || w < 1 || h < 1 || (comps != 1 && comps != 2)) return 0;
+  fmt = comps == 2 ? GL_RG : GL_RED;
+  internal = comps == 2 ? GL_RG8 : GL_R8;
+  if (tex <= 0) {
+    glGenTextures(1, &t);
+    tex = (int)t;
+  }
+  glBindTexture(GL_TEXTURE_2D, (GLuint)tex);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+  glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+  glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+  glTexImage2D(GL_TEXTURE_2D, 0, (GLint)internal, w, h, 0, fmt, GL_UNSIGNED_BYTE, px);
+  return tex;
+}
+
+int bw_gl_i1(int prog, const char* name, int v) {
+  GLint loc;
+  if (!g_ok || prog <= 0 || !name) return 0;
+  glUseProgram((GLuint)prog);
+  loc = glGetUniformLocation((GLuint)prog, name);
+  if (loc < 0) return 0;
+  glUniform1i(loc, v);
+  return 1;
+}
+
+int bw_gl_quad_planes(int prog, const int* tex, int ntex,
+    uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1,
+    uint32_t u0, uint32_t v0, uint32_t u1, uint32_t v1) {
+  float v[20];
+  float X0 = fbits(x0), Y0 = fbits(y0), X1 = fbits(x1), Y1 = fbits(y1);
+  float U0 = fbits(u0), V0 = fbits(v0), U1 = fbits(u1), V1 = fbits(v1);
+  int i;
+  const char* names[3] = {"g_Texture0", "g_Tex1", "g_Tex2"};
+  if (!g_ok || prog <= 0 || !tex || ntex < 1) return 0;
+  v[0] = X0; v[1] = Y0; v[2] = 0; v[3] = U0; v[4] = V0;
+  v[5] = X1; v[6] = Y0; v[7] = 0; v[8] = U1; v[9] = V0;
+  v[10] = X0; v[11] = Y1; v[12] = 0; v[13] = U0; v[14] = V1;
+  v[15] = X1; v[16] = Y1; v[17] = 0; v[18] = U1; v[19] = V1;
+  glUseProgram((GLuint)prog);
+  for (i = 0; i < ntex && i < 3; i++) {
+    GLint loc;
+    if (tex[i] <= 0) return 0;
+    glActiveTexture(GL_TEXTURE0 + i);
+    glBindTexture(GL_TEXTURE_2D, (GLuint)tex[i]);
+    loc = glGetUniformLocation((GLuint)prog, names[i]);
+    if (loc >= 0) glUniform1i(loc, i);
+  }
+  glActiveTexture(GL_TEXTURE0);
+  glBindVertexArray(g_vao);
+  glBindBuffer(GL_ARRAY_BUFFER, g_vbo);
+  glBufferData(GL_ARRAY_BUFFER, 20 * (int)sizeof(float), v, GL_DYNAMIC_DRAW);
+  glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+  return 1;
+}
+
 static GLuint compile_one(GLenum type, const char* src) {
   GLuint s;
   GLint ok = 0;

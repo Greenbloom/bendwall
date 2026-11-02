@@ -6,13 +6,16 @@
 #include "vaudio.h"
 
 #include <ctype.h>
+#include <stdarg.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
+#include <libavutil/hwcontext.h>
 #include <libavutil/imgutils.h>
+#include <libavutil/pixdesc.h>
 #include <libswscale/swscale.h>
 #include <math.h>
 #include <png.h>
@@ -37,6 +40,11 @@ int bw_gl_quad(int prog, int tex,
     uint32_t u0, uint32_t v0, uint32_t u1, uint32_t v1);
 int bw_gl_verts(int prog, int tex, const float* xyuv);
 int bw_gl_image(int tex, int w, int h, const uint8_t* px, int n);
+int bw_gl_plane(int tex, int w, int h, const uint8_t* px, int comps);
+int bw_gl_i1(int prog, const char* name, int v);
+int bw_gl_quad_planes(int prog, const int* tex, int ntex,
+    uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1,
+    uint32_t u0, uint32_t v0, uint32_t u1, uint32_t v1);
 int bw_gl_f1(int prog, const char* name, uint32_t bits);
 int bw_gl_fvn(int prog, const char* name, const float* v, int count);
 int bw_gl_read(uint8_t* dst, int n);
@@ -72,16 +80,60 @@ static const char* k_copy =
   "out vec4 fragColor;\n"
   "void main(){ vec4 c = texture(g_Texture0, v); c.rgb *= g_Color; c.a *= g_Alpha; fragColor = c; }\n";
 
+/* Y and chroma stay in the planes the decoder wrote. The GPU does the
+   range expand and the matrix, so the CPU never builds an RGBA frame. */
+static const char* k_yuv =
+  "#version 330 core\n"
+  "in vec2 v;\n"
+  "uniform sampler2D g_Texture0;\n"
+  "uniform sampler2D g_Tex1;\n"
+  "uniform sampler2D g_Tex2;\n"
+  "uniform int g_Nv12;\n"
+  "uniform int g_Limited;\n"
+  "uniform int g_Bt709;\n"
+  "uniform float g_Alpha;\n"
+  "out vec4 fragColor;\n"
+  "void main(){\n"
+  "  float y = texture(g_Texture0, v).r;\n"
+  "  float u; float c;\n"
+  "  if (g_Nv12 == 1) { u = texture(g_Tex1, v).r; c = texture(g_Tex1, v).g; }\n"
+  "  else { u = texture(g_Tex1, v).r; c = texture(g_Tex2, v).r; }\n"
+  "  float yy = y; float uu = u - 0.5; float vv = c - 0.5;\n"
+  "  if (g_Limited == 1) yy = (y - 0.062745098) * 1.164383;\n"
+  "  float r; float g; float b;\n"
+  "  if (g_Limited == 1 && g_Bt709 == 1) {\n"
+  "    r = yy + 1.792741 * vv; g = yy - 0.213249 * uu - 0.532909 * vv; b = yy + 2.112402 * uu;\n"
+  "  } else if (g_Limited == 1) {\n"
+  "    r = yy + 1.596027 * vv; g = yy - 0.391762 * uu - 0.812968 * vv; b = yy + 2.017232 * uu;\n"
+  "  } else if (g_Bt709 == 1) {\n"
+  "    r = yy + 1.5748 * vv; g = yy - 0.187324 * uu - 0.468124 * vv; b = yy + 1.8556 * uu;\n"
+  "  } else {\n"
+  "    r = yy + 1.402 * vv; g = yy - 0.344136 * uu - 0.714136 * vv; b = yy + 1.772 * uu;\n"
+  "  }\n"
+  "  fragColor = vec4(clamp(vec3(r, g, b), 0.0, 1.0), g_Alpha);\n"
+  "}\n";
+
 typedef struct Vid {
   AVFormatContext* fmt;
   AVCodecContext* ctx;
   AVPacket* pkt;
   AVFrame* fr;
+  AVFrame* xfer;
+  AVBufferRef* hw_dev;
+  enum AVPixelFormat hw_pix;
+  enum AVHWDeviceType hw_type;
   struct SwsContext* sws;
   int stream;
   int w, h;
   int sw, sh;
   int src_w, src_h;
+  int nplane;
+  int limited;
+  int bt709;
+  int serial;
+  int said;
+  uint8_t* plane[3];
+  int plane_cap[3];
   uint8_t* rgba;
   int frame_ms;
   int acc;
@@ -89,9 +141,21 @@ typedef struct Vid {
 } Vid;
 
 static Vid g_vid;
+static enum AVPixelFormat g_hw_wanted = AV_PIX_FMT_NONE;
+static int g_au_logged;
 static int g_w, g_h, g_gl, g_open;
-static int g_copy_prog, g_fx_prog;
+static int g_clients, g_gen;
+static char g_open_dir[1100];
+static int g_pace;
+static int g_refresh_hz = 60;
+static int g_have_slot;
+static long long g_pace_slot;
+static int g_copy_prog, g_fx_prog, g_yuv_prog;
 static int g_tex, g_text_tex, g_white, g_checker;
+static int g_plane[3];
+static int g_uploaded;
+static int g_dec_us, g_dec_frames;
+static char g_dec_how[32];
 static int g_text_w, g_text_h;
 static float g_scene_w, g_scene_h;
 static char g_dir[1100];
@@ -160,17 +224,51 @@ static uint32_t fbits(float f) {
 }
 
 
+static void vid_avlog(void* avcl, int level, const char* fmt, va_list ap) {
+  if (fmt && strstr(fmt, "missing picture in access unit")) {
+    /* SPS, PPS, SEI, and AUD units are not pictures. One line is enough. */
+    if (!g_au_logged) {
+      g_au_logged = 1;
+      fprintf(stderr, "bendwall: h264 access unit has no picture; further lines suppressed\n");
+    }
+    return;
+  }
+  av_log_default_callback(avcl, level, fmt, ap);
+}
+
 static void vid_close(void) {
+  int i;
   if (g_vid.sws) sws_freeContext(g_vid.sws);
   if (g_vid.fr) av_frame_free(&g_vid.fr);
+  if (g_vid.xfer) av_frame_free(&g_vid.xfer);
   if (g_vid.pkt) av_packet_free(&g_vid.pkt);
   if (g_vid.ctx) avcodec_free_context(&g_vid.ctx);
   if (g_vid.fmt) avformat_close_input(&g_vid.fmt);
+  if (g_vid.hw_dev) av_buffer_unref(&g_vid.hw_dev);
   free(g_vid.rgba);
+  for (i = 0; i < 3; i++) free(g_vid.plane[i]);
   memset(&g_vid, 0, sizeof g_vid);
+  g_vid.hw_pix = AV_PIX_FMT_NONE;
+  g_vid.hw_type = AV_HWDEVICE_TYPE_NONE;
 }
 
-static int vid_convert(AVFrame* fr) {
+static int copy_plane(uint8_t** dst, int* cap, const uint8_t* src, int src_stride, int w, int h) {
+  int y;
+  uint8_t* buf;
+  if (!src || w < 1 || h < 1 || src_stride < w) return 0;
+  buf = *dst;
+  if (*cap < w * h) {
+    buf = (uint8_t*)realloc(*dst, (size_t)w * (size_t)h);
+    if (!buf) return 0;
+    *dst = buf;
+    *cap = w * h;
+  }
+  for (y = 0; y < h; y++)
+    memcpy(buf + (size_t)y * (size_t)w, src + (size_t)y * (size_t)src_stride, (size_t)w);
+  return 1;
+}
+
+static int vid_convert_rgba(AVFrame* fr) {
   int dw, dh, y;
   uint8_t* buf;
   AVFrame* rgb;
@@ -181,7 +279,7 @@ static int vid_convert(AVFrame* fr) {
   if (dh > 1080) { dw = dw * 1080 / dh; if (dw < 1) dw = 1; dh = 1080; }
   if (!g_vid.sws || g_vid.sw != dw || g_vid.sh != dh || g_vid.src_w != fr->width || g_vid.src_h != fr->height) {
     if (g_vid.sws) sws_freeContext(g_vid.sws);
-    g_vid.sws = sws_getContext(fr->width, fr->height, fr->format, dw, dh,
+    g_vid.sws = sws_getContext(fr->width, fr->height, (enum AVPixelFormat)fr->format, dw, dh,
                                AV_PIX_FMT_RGBA, SWS_BILINEAR, NULL, NULL, NULL);
     g_vid.sw = dw;
     g_vid.sh = dh;
@@ -204,17 +302,74 @@ static int vid_convert(AVFrame* fr) {
   g_vid.rgba = buf;
   g_vid.w = dw;
   g_vid.h = dh;
+  g_vid.nplane = 0;
   av_frame_free(&rgb);
   return 1;
 }
 
-static int vid_next(int allow_loop) {
+static int vid_store(AVFrame* fr) {
+  AVFrame* src = fr;
+  int chroma_w, chroma_h;
+  if (!fr) return 0;
+  if (g_vid.hw_pix != AV_PIX_FMT_NONE && fr->format == g_vid.hw_pix) {
+    if (!g_vid.xfer) g_vid.xfer = av_frame_alloc();
+    if (!g_vid.xfer) return 0;
+    av_frame_unref(g_vid.xfer);
+    if (av_hwframe_transfer_data(g_vid.xfer, fr, 0) < 0) return 0;
+    src = g_vid.xfer;
+  }
+  g_vid.limited = src->color_range != AVCOL_RANGE_JPEG && src->format != AV_PIX_FMT_YUVJ420P;
+  /* HD is BT.709 unless the stream says BT.601. SD stays BT.601. */
+  if (src->colorspace == AVCOL_SPC_BT709) g_vid.bt709 = 1;
+  else if (src->colorspace == AVCOL_SPC_BT470BG || src->colorspace == AVCOL_SPC_SMPTE170M)
+    g_vid.bt709 = 0;
+  else g_vid.bt709 = src->height >= 720;
+  if (src->format == AV_PIX_FMT_YUV420P || src->format == AV_PIX_FMT_YUVJ420P) {
+    chroma_w = src->width / 2;
+    chroma_h = src->height / 2;
+    if (chroma_w < 1) chroma_w = 1;
+    if (chroma_h < 1) chroma_h = 1;
+    if (!copy_plane(&g_vid.plane[0], &g_vid.plane_cap[0], src->data[0], src->linesize[0], src->width, src->height) ||
+        !copy_plane(&g_vid.plane[1], &g_vid.plane_cap[1], src->data[1], src->linesize[1], chroma_w, chroma_h) ||
+        !copy_plane(&g_vid.plane[2], &g_vid.plane_cap[2], src->data[2], src->linesize[2], chroma_w, chroma_h))
+      return 0;
+    g_vid.nplane = 3;
+    g_vid.w = src->width;
+    g_vid.h = src->height;
+  } else if (src->format == AV_PIX_FMT_NV12) {
+    chroma_w = src->width;
+    chroma_h = src->height / 2;
+    if (chroma_h < 1) chroma_h = 1;
+    if (!copy_plane(&g_vid.plane[0], &g_vid.plane_cap[0], src->data[0], src->linesize[0], src->width, src->height) ||
+        !copy_plane(&g_vid.plane[1], &g_vid.plane_cap[1], src->data[1], src->linesize[1], chroma_w, chroma_h))
+      return 0;
+    g_vid.nplane = 2;
+    g_vid.w = src->width;
+    g_vid.h = src->height;
+  } else if (!vid_convert_rgba(src)) {
+    return 0;
+  }
+  g_vid.serial++;
+  if (!g_vid.said) {
+    const char* pix = av_get_pix_fmt_name((enum AVPixelFormat)src->format);
+    const char* how = "software";
+    g_vid.said = 1;
+    if (g_vid.hw_dev && fr->format == g_vid.hw_pix && g_vid.hw_pix != AV_PIX_FMT_NONE)
+      how = av_hwdevice_get_type_name(g_vid.hw_type);
+    if (!how) how = "software";
+    snprintf(g_dec_how, sizeof g_dec_how, "%s", how);
+    fprintf(stderr, "bendwall: video decode %s %dx%d %s\n", how, g_vid.w, g_vid.h, pix ? pix : "?");
+  }
+  return 1;
+}
+
+static int vid_next_body(int allow_loop) {
   int loops = 0, guard = 0;
   if (!g_vid.open) return 0;
   while (guard++ < 8000) {
     int ret = avcodec_receive_frame(g_vid.ctx, g_vid.fr);
     if (ret == 0) {
-      int ok = vid_convert(g_vid.fr);
+      int ok = vid_store(g_vid.fr);
       av_frame_unref(g_vid.fr);
       return ok;
     }
@@ -223,7 +378,7 @@ static int vid_next(int allow_loop) {
       avcodec_send_packet(g_vid.ctx, NULL);
       ret = avcodec_receive_frame(g_vid.ctx, g_vid.fr);
       if (ret == 0) {
-        int ok = vid_convert(g_vid.fr);
+        int ok = vid_store(g_vid.fr);
         av_frame_unref(g_vid.fr);
         return ok;
       }
@@ -233,11 +388,90 @@ static int vid_next(int allow_loop) {
       avcodec_flush_buffers(g_vid.ctx);
       continue;
     }
-    if (g_vid.pkt->stream_index == g_vid.stream)
+    if (g_vid.pkt->stream_index == g_vid.stream && g_vid.pkt->size > 0)
       avcodec_send_packet(g_vid.ctx, g_vid.pkt);
     av_packet_unref(g_vid.pkt);
   }
   return 0;
+}
+
+static int vid_next(int allow_loop) {
+  double t0 = mono_us();
+  int ok = vid_next_body(allow_loop);
+  if (ok) {
+    g_dec_us += (int)(mono_us() - t0);
+    g_dec_frames++;
+  }
+  return ok;
+}
+
+static enum AVPixelFormat vid_get_format(AVCodecContext* ctx, const enum AVPixelFormat* fmts) {
+  const enum AVPixelFormat* p;
+  (void)ctx;
+  for (p = fmts; *p != AV_PIX_FMT_NONE; p++)
+    if (*p == g_hw_wanted) return *p;
+  return fmts[0];
+}
+
+static int vid_hw_pix(const AVCodec* codec, enum AVHWDeviceType type, enum AVPixelFormat* pix) {
+  int i;
+  for (i = 0;; i++) {
+    const AVCodecHWConfig* cfg = avcodec_get_hw_config(codec, i);
+    if (!cfg) return 0;
+    if ((cfg->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX) && cfg->device_type == type) {
+      *pix = cfg->pix_fmt;
+      return 1;
+    }
+  }
+}
+
+/* VA-API covers Intel and NVIDIA's NVDEC frontend. CUDA is NVDEC itself.
+   A missing device leaves the software decoder in place. */
+static int vid_attach_hw(const AVCodec* codec) {
+  static const enum AVHWDeviceType order[] = {
+    AV_HWDEVICE_TYPE_VAAPI, AV_HWDEVICE_TYPE_CUDA, AV_HWDEVICE_TYPE_NONE
+  };
+  int i, level;
+  level = av_log_get_level();
+  av_log_set_level(AV_LOG_QUIET);
+  for (i = 0; order[i] != AV_HWDEVICE_TYPE_NONE; i++) {
+    enum AVPixelFormat pix = AV_PIX_FMT_NONE;
+    AVBufferRef* dev = NULL;
+    if (!vid_hw_pix(codec, order[i], &pix)) continue;
+    if (av_hwdevice_ctx_create(&dev, order[i], NULL, NULL, 0) < 0) continue;
+    av_log_set_level(level);
+    g_vid.hw_dev = dev;
+    g_vid.hw_pix = pix;
+    g_vid.hw_type = order[i];
+    g_hw_wanted = pix;
+    return 1;
+  }
+  av_log_set_level(level);
+  g_hw_wanted = AV_PIX_FMT_NONE;
+  return 0;
+}
+
+static int vid_open_decoder(const AVCodec* codec, int use_hw) {
+  if (g_vid.ctx) avcodec_free_context(&g_vid.ctx);
+  if (g_vid.hw_dev) {
+    av_buffer_unref(&g_vid.hw_dev);
+    g_vid.hw_dev = NULL;
+  }
+  g_vid.hw_pix = AV_PIX_FMT_NONE;
+  g_vid.hw_type = AV_HWDEVICE_TYPE_NONE;
+  g_hw_wanted = AV_PIX_FMT_NONE;
+  if (use_hw) vid_attach_hw(codec);
+  g_vid.ctx = avcodec_alloc_context3(codec);
+  if (!g_vid.ctx) return 0;
+  if (avcodec_parameters_to_context(g_vid.ctx, g_vid.fmt->streams[g_vid.stream]->codecpar) < 0)
+    return 0;
+  if (g_vid.hw_dev) {
+    g_vid.ctx->hw_device_ctx = av_buffer_ref(g_vid.hw_dev);
+    g_vid.ctx->get_format = vid_get_format;
+    g_vid.ctx->pix_fmt = g_vid.hw_pix;
+  }
+  if (avcodec_open2(g_vid.ctx, codec, NULL) < 0) return 0;
+  return 1;
 }
 
 static int vid_open(const char* path) {
@@ -246,6 +480,7 @@ static int vid_open(const char* path) {
   AVRational rate;
   double fps;
   vid_close();
+  av_log_set_callback(vid_avlog);
   if (!path || !path[0]) return 0;
   if (avformat_open_input(&g_vid.fmt, path, NULL, NULL) < 0) return 0;
   if (avformat_find_stream_info(g_vid.fmt, NULL) < 0) { vid_close(); return 0; }
@@ -261,13 +496,9 @@ static int vid_open(const char* path) {
      demuxer, so a picture seek cannot starve it or land in the spectrum. */
   codec = avcodec_find_decoder(g_vid.fmt->streams[g_vid.stream]->codecpar->codec_id);
   if (!codec) { vid_close(); return 0; }
-  g_vid.ctx = avcodec_alloc_context3(codec);
-  if (!g_vid.ctx) { vid_close(); return 0; }
-  if (avcodec_parameters_to_context(g_vid.ctx, g_vid.fmt->streams[g_vid.stream]->codecpar) < 0) {
-    vid_close();
-    return 0;
+  if (!vid_open_decoder(codec, 1)) {
+    if (!vid_open_decoder(codec, 0)) { vid_close(); return 0; }
   }
-  if (avcodec_open2(g_vid.ctx, codec, NULL) < 0) { vid_close(); return 0; }
   g_vid.pkt = av_packet_alloc();
   g_vid.fr = av_frame_alloc();
   if (!g_vid.pkt || !g_vid.fr) { vid_close(); return 0; }
@@ -278,7 +509,16 @@ static int vid_open(const char* path) {
   g_vid.frame_ms = (int)(1000.0 / fps + 0.5);
   if (g_vid.frame_ms < 1) g_vid.frame_ms = 1;
   g_vid.open = 1;
-  if (!vid_next(0)) { vid_close(); return 0; }
+  if (!vid_next(0)) {
+    /* The device opened and then refused the stream. Software still has to play. */
+    if (g_vid.hw_dev) {
+      av_seek_frame(g_vid.fmt, -1, 0, AVSEEK_FLAG_BACKWARD);
+      if (!vid_open_decoder(codec, 0) || !vid_next(0)) { vid_close(); return 0; }
+    } else {
+      vid_close();
+      return 0;
+    }
+  }
   g_has_video = 1;
   return 1;
 }
@@ -492,8 +732,44 @@ static int ensure_checker(void) {
   return g_checker;
 }
 
+static int draw_yuv(void) {
+  float x0, y0, x1, y1;
+  if (g_vid.nplane < 2 || g_plane[0] <= 0 || g_plane[1] <= 0) return 0;
+  if (!g_yuv_prog) g_yuv_prog = bw_gl_prog(k_vs, k_yuv);
+  if (!g_yuv_prog) return 0;
+  bw_gl_i1(g_yuv_prog, "g_Nv12", g_vid.nplane == 2 ? 1 : 0);
+  bw_gl_i1(g_yuv_prog, "g_Limited", g_vid.limited ? 1 : 0);
+  bw_gl_i1(g_yuv_prog, "g_Bt709", g_vid.bt709 ? 1 : 0);
+  bw_gl_f1(g_yuv_prog, "g_Alpha", fbits(1.f));
+  x0 = -1.f;
+  x1 = 1.f;
+  y0 = 1.f;
+  y1 = -1.f;
+  return bw_gl_quad_planes(g_yuv_prog, g_plane, g_vid.nplane,
+                           fbits(x0), fbits(y0), fbits(x1), fbits(y1),
+                           fbits(0.f), fbits(0.f), fbits(1.f), fbits(1.f));
+}
+
 static void upload_picture(void) {
-  if (g_has_video && g_vid.rgba)
+  int uw, uh;
+  if (!g_has_video) return;
+  if (g_vid.nplane >= 2) {
+    if (g_vid.serial == g_uploaded && g_plane[0] > 0) return;
+    uw = g_vid.w / 2;
+    uh = g_vid.h / 2;
+    if (uw < 1) uw = 1;
+    if (uh < 1) uh = 1;
+    g_plane[0] = bw_gl_plane(g_plane[0], g_vid.w, g_vid.h, g_vid.plane[0], 1);
+    if (g_vid.nplane == 2)
+      g_plane[1] = bw_gl_plane(g_plane[1], uw, uh, g_vid.plane[1], 2);
+    else {
+      g_plane[1] = bw_gl_plane(g_plane[1], uw, uh, g_vid.plane[1], 1);
+      g_plane[2] = bw_gl_plane(g_plane[2], uw, uh, g_vid.plane[2], 1);
+    }
+    if (g_plane[0] > 0) g_uploaded = g_vid.serial;
+    return;
+  }
+  if (g_vid.rgba)
     g_tex = bw_gl_image(g_tex, g_vid.w, g_vid.h, g_vid.rgba, g_vid.w * g_vid.h * 4);
 }
 
@@ -1430,7 +1706,9 @@ static int draw(void) {
   upload_picture();
   sync_sprites();
   if (!bw_gl_bind(1) || !bw_gl_clear()) { bw_gl_end(); return 0; }
-  if (g_has_video && g_tex > 0) {
+  if (g_has_video && g_vid.nplane >= 2) {
+    draw_yuv();
+  } else if (g_has_video && g_tex > 0) {
     draw_quad(g_copy_prog, g_tex, 0, 0, g_w, g_h, 1.f);
   } else if (g_nlive > 0) {
     glEnable(GL_BLEND);
@@ -1535,8 +1813,11 @@ static void reset_plan(void) {
   g_text_tex = 0;
   g_white = 0;
   g_checker = 0;
+  g_plane[0] = g_plane[1] = g_plane[2] = 0;
+  g_uploaded = 0;
   g_copy_prog = 0;
   g_fx_prog = 0;
+  g_yuv_prog = 0;
   g_part_prog = 0;
   g_part_vao = g_part_quad = g_part_inst = 0;
   g_part_view = g_part_samp = -1;
@@ -1551,6 +1832,9 @@ static void reset_plan(void) {
 static void play_close_unlocked(void) {
   if (g_gl && bw_gl_begin()) {
     if (g_tex > 0) { GLuint t = (GLuint)g_tex; glDeleteTextures(1, &t); }
+    if (g_plane[0] > 0) { GLuint t = (GLuint)g_plane[0]; glDeleteTextures(1, &t); }
+    if (g_plane[1] > 0) { GLuint t = (GLuint)g_plane[1]; glDeleteTextures(1, &t); }
+    if (g_plane[2] > 0) { GLuint t = (GLuint)g_plane[2]; glDeleteTextures(1, &t); }
     if (g_text_tex > 0) { GLuint t = (GLuint)g_text_tex; glDeleteTextures(1, &t); }
     if (g_white > 0) { GLuint t = (GLuint)g_white; glDeleteTextures(1, &t); }
     if (g_checker > 0) { GLuint t = (GLuint)g_checker; glDeleteTextures(1, &t); }
@@ -1565,6 +1849,7 @@ static void play_close_unlocked(void) {
     free_part_batch();
     if (g_copy_prog > 0) glDeleteProgram((GLuint)g_copy_prog);
     if (g_fx_prog > 0) glDeleteProgram((GLuint)g_fx_prog);
+    if (g_yuv_prog > 0) glDeleteProgram((GLuint)g_yuv_prog);
     bw_gl_shutdown();
     bw_gl_end();
   }
@@ -1638,9 +1923,66 @@ void bw_play_audio(const float* interleaved, int nfloats) {
   bw_audio_inject(interleaved, nfloats);
 }
 
+static int pace_ms_unlocked(void);
+
 void bw_play_close(void) {
   pthread_mutex_lock(&g_play_mu);
+  g_clients = 0;
+  g_gen++;
+  g_open_dir[0] = 0;
   play_close_unlocked();
+  pthread_mutex_unlock(&g_play_mu);
+}
+
+int bw_play_generation(void) {
+  int gen;
+  pthread_mutex_lock(&g_play_mu);
+  gen = g_gen;
+  pthread_mutex_unlock(&g_play_mu);
+  return gen;
+}
+
+void bw_play_release(int generation) {
+  pthread_mutex_lock(&g_play_mu);
+  if (generation != g_gen || g_clients <= 0) {
+    pthread_mutex_unlock(&g_play_mu);
+    return;
+  }
+  g_clients--;
+  if (g_clients == 0) {
+    g_open_dir[0] = 0;
+    play_close_unlocked();
+  }
+  pthread_mutex_unlock(&g_play_mu);
+}
+
+void bw_play_set_pace(int on) {
+  pthread_mutex_lock(&g_play_mu);
+  g_pace = on ? 1 : 0;
+  pthread_mutex_unlock(&g_play_mu);
+}
+
+void bw_play_set_refresh(int hz) {
+  pthread_mutex_lock(&g_play_mu);
+  if (hz < 20) hz = 60;
+  if (hz > 360) hz = 360;
+  g_refresh_hz = hz;
+  pthread_mutex_unlock(&g_play_mu);
+}
+
+int bw_play_pace_ms(void) {
+  int ms;
+  pthread_mutex_lock(&g_play_mu);
+  ms = pace_ms_unlocked();
+  pthread_mutex_unlock(&g_play_mu);
+  return ms;
+}
+
+void bw_play_video_cost(int* cpu_us, int* frames, char* how, int how_n) {
+  pthread_mutex_lock(&g_play_mu);
+  if (cpu_us) *cpu_us = g_dec_us;
+  if (frames) *frames = g_dec_frames;
+  if (how && how_n > 0) snprintf(how, (size_t)how_n, "%s", g_dec_how[0] ? g_dec_how : "none");
   pthread_mutex_unlock(&g_play_mu);
 }
 
@@ -1649,8 +1991,20 @@ int bw_play_open(const char* dir, int w, int h) {
   const char* assets;
   int i, keep_read, opened;
   pthread_mutex_lock(&g_play_mu);
+  if (g_open && g_clients > 0 && dir && dir[0] && g_open_dir[0] && strcmp(g_open_dir, dir) == 0) {
+    g_clients++;
+    pthread_mutex_unlock(&g_play_mu);
+    return 1;
+  }
   keep_read = g_want_readback;
   play_close_unlocked();
+  g_clients = 0;
+  g_gen++;
+  g_open_dir[0] = 0;
+  g_have_slot = 0;
+  g_dec_us = 0;
+  g_dec_frames = 0;
+  g_dec_how[0] = 0;
   g_want_readback = keep_read;
   g_force_readback = 0;
   g_ptr_ok = 0;
@@ -1741,19 +2095,51 @@ int bw_play_open(const char* dir, int w, int h) {
   bw_plan_free(&plan);
   spectrum_update();
   g_open = draw();
+  if (g_open && dir && dir[0]) {
+    snprintf(g_open_dir, sizeof g_open_dir, "%s", dir);
+    g_clients = 1;
+  }
   refresh_line();
   opened = g_open;
   pthread_mutex_unlock(&g_play_mu);
   return opened;
 }
 
+static int pace_ms_unlocked(void) {
+  int frame = g_vid.frame_ms > 0 ? g_vid.frame_ms : 33;
+  int refresh = g_refresh_hz > 0 ? (int)(1000.0 / (double)g_refresh_hz + 0.5) : 16;
+  int ms = frame > refresh ? frame : refresh;
+  if (ms < 8) ms = 8;
+  if (ms > 100) ms = 100;
+  return ms;
+}
+
 int bw_play_step(int dt_ms) {
   int guard = 0;
+  int cap = 180;
+  int paced = 0;
   double t0;
   int ok = 0;
   pthread_mutex_lock(&g_play_mu);
   if (!g_open) goto step_out;
   if (dt_ms < 0) dt_ms = 0;
+  if (g_pace && g_vid.open) {
+    double now = mono_us();
+    int ms = pace_ms_unlocked();
+    long long slot = (long long)(now / ((double)ms * 1000.0));
+    /* Both screens tick on one thread. A step that lands in the slot just
+       drawn, including one queued while that draw ran past the boundary,
+       reuses the frame. */
+    if (g_have_slot && slot <= g_pace_slot) {
+      ok = 1;
+      goto step_out;
+    }
+    g_have_slot = 1;
+    g_pace_slot = slot;
+    dt_ms = ms;
+    cap = 1;
+    paced = 1;
+  }
   g_time_ms += dt_ms;
   t0 = mono_us();
   sim_particles((float)dt_ms / 1000.f);
@@ -1763,13 +2149,22 @@ int bw_play_step(int dt_ms) {
     /* A one-second step on a 30fps clip is ~30 frames. The old cap of 8
        left the picture almost where it started, so --play-frames compared
        two copies of the same image. */
-    while (g_vid.frame_ms > 0 && g_vid.acc >= g_vid.frame_ms && guard++ < 180) {
+    while (g_vid.frame_ms > 0 && g_vid.acc >= g_vid.frame_ms && guard++ < cap) {
       g_vid.acc -= g_vid.frame_ms;
       if (!vid_next(1)) break;
     }
+    /* A 30 Hz panel showing 60 fps video adds more time than one frame.
+       Leave the extra behind so the next tick does not owe a burst. */
+    if (paced && g_vid.frame_ms > 0 && g_vid.acc >= g_vid.frame_ms) g_vid.acc = 0;
   }
   spectrum_update();
   if (!draw()) goto step_out;
+  if (paced) {
+    double now = mono_us();
+    int ms = pace_ms_unlocked();
+    long long slot = (long long)(now / ((double)ms * 1000.0));
+    if (slot > g_pace_slot) g_pace_slot = slot;
+  }
   refresh_line();
   ok = 1;
 step_out:

@@ -34,9 +34,17 @@ Column {
     }
 
     Text {
-        text: "Workshop"
+        text: "Wallpaper"
         color: "#e8e6e3"
         font.pixelSize: 13
+    }
+
+    Text {
+        text: "Compatible with Wallpaper Engine wallpapers. Wallpaper Engine, Steam, and Workshop are trademarks of their respective owners. Bendwall is not affiliated with or endorsed by those owners."
+        color: "#9a958c"
+        font.pixelSize: 11
+        width: 236
+        wrapMode: Text.Wrap
     }
 
     ComboBox {

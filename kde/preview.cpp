@@ -67,7 +67,7 @@ static QImage renderSheet(const QString& frame, const QString& project, const QS
     painter.setFont(font);
     painter.setPen(QColor(232, 230, 227));
     int y = 28;
-    painter.drawText(QRect(256, y, 248, 20), "Workshop");
+    painter.drawText(QRect(256, y, 248, 20), "Wallpaper");
     y += 24;
     painter.setPen(QColor(200, 196, 188));
     for (const QString& id : workshopIds(workshop)) {

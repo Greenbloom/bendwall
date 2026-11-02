@@ -6,7 +6,8 @@
   <kcfgfile name=""/>
   <group name="General">
     <entry name="Item" type="String">
-      <label>Workshop item</label>
+      <label>Wallpaper folder</label>
+      <whatsthis>A folder of a wallpaper compatible with Wallpaper Engine. Wallpaper Engine, Steam, and Workshop are trademarks of their respective owners. Bendwall is not affiliated with or endorsed by those owners.</whatsthis>
       <default></default>
     </entry>
     <entry name="VideoVolume" type="Int">

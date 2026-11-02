@@ -1,5 +1,7 @@
 # Bendwall
 
+Bendwall plays wallpapers compatible with Wallpaper Engine. Wallpaper Engine, Steam, and Workshop are trademarks of their respective owners. Bendwall is not affiliated with or endorsed by those owners. The source license is MIT. See LICENSE and NOTICE.
+
 ## Why
 
 Philip wants a from-scratch live-wallpaper engine for Linux KDE Plasma 6, written in the Bend2 language, that loads and runs public Steam Workshop wallpapers made for Wallpaper Engine (Steam app 431960). The package, texture, scene, material, and shader rules come from the REA notes shipped with this tree. The engine reads a Wallpaper Engine install at runtime. It does not vendor Wallpaper Engine binaries, shaders, or Workshop items.

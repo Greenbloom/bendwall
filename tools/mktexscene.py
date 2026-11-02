@@ -1039,7 +1039,7 @@ def main():
     write_text(os.path.join(PLAY, "web", "project.json"), """{
   "general": {"properties": {"schemecolor": {"type": "color", "value": "1 0 0"}}},
   "file": "index.html",
-  "title": "Colorful Matrix",
+  "title": "Green Page",
   "type": "web"
 }
 """)

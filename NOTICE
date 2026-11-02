@@ -1,0 +1,16 @@
+Bendwall
+Copyright (c) 2026 Philip Tams
+
+Bendwall plays wallpapers compatible with Wallpaper Engine.
+
+Wallpaper Engine, Steam, and Workshop are trademarks of their respective owners.
+Bendwall is not affiliated with or endorsed by those owners.
+
+The source of Bendwall is under the MIT license in the LICENSE file.
+
+scripts/lib.sh links libbendwall.so with libavcodec, libavformat, libswscale,
+libswresample, and libavutil. FFmpeg is LGPL-2.1-or-later unless that build
+includes GPL parts. Debian's ffmpeg package is built with --enable-gpl, and
+its copyright file states that those binaries are GPL-2.0-or-later.
+libbendwall.so linked against that FFmpeg can be distributed only on terms
+compatible with the FFmpeg build it uses.

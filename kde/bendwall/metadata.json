@@ -2,7 +2,7 @@
     "KPackageStructure": "Plasma/Wallpaper",
     "KPlugin": {
         "Authors": [{ "Name": "Philip Tams" }],
-        "Description": "Wallpaper Engine scenes through the Bend2 engine",
+        "Description": "Plays wallpapers compatible with Wallpaper Engine. Wallpaper Engine, Steam, and Workshop are trademarks of their respective owners. Bendwall is not affiliated with or endorsed by those owners.",
         "Icon": "preferences-desktop-wallpaper",
         "Id": "com.philip.bendwall",
         "License": "MIT",

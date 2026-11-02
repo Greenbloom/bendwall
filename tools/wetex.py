@@ -16,15 +16,15 @@ def parse(b, keep_data=False):
     r = R(b)
     h = {'texv': r.tag(), 'texi': r.tag()}
     h.update(format=r.u32(), flags=r.u32(), tex_w=r.u32(), tex_h=r.u32())
-    vol = bool(h['flags'] & 0x40)  # REA FUN_14015c760: flag 0x40 adds a depth field after img_h (volume/3D LUT)
+    vol = bool(h['flags'] & 0x40)  # flag 0x40 adds a depth field after img_h, a volume or 3D LUT
     h.update(img_w=r.u32(), img_h=r.u32())
     if vol: h['depth'] = r.u32()
-    h['unk_color'] = hex(r.u32())   # REA: read when TEXI version > 0; meaning unknown (looks ARGB)
+    h['unk_color'] = hex(r.u32())   # present when the TEXI version is above 0; meaning unknown, stored like ARGB
     h['texb'] = r.tag()
     bv = int(h['texb'][4:])
     nimg = r.u32()
     if bv >= 3: h['image_format'] = r.i32()   # FreeImage FREE_IMAGE_FORMAT, -1 = raw
-    if bv >= 4: h['texb4_cond'] = r.u32()      # REA FUN_14015c8d0: nonzero -> condition/variant table (inferred); 0 in all samples
+    if bv >= 4: h['texb4_cond'] = r.u32()      # nonzero selects a condition or variant table; samples read so far store 0
     imgs = []
     for _ in range(nimg):
         mips = []

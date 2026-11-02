@@ -1,7 +1,7 @@
 #!/bin/sh
 # Restart plasmashell so it maps the library install.sh just renamed into place.
-# pkill plasmashell does not stop it on CachyOS. pkill -f also matches a script
-# whose command line contains that word, so this uses an exact comm match.
+# pkill -f also matches a script whose command line contains plasmashell, so
+# this uses an exact comm match.
 set -e
 pids=$(pgrep -x plasmashell || true)
 if [ -n "$pids" ]; then

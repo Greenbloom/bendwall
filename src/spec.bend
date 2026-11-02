@@ -1,6 +1,6 @@
 import Base
 
-# Wallpaper Engine gates from the REA spec.
+# Package version and size gates.
 # pkg version fails at >= 25. Names longer than 0x800 are dropped.
 # Texture width and height cap at 8192. Depth caps at 128.
 

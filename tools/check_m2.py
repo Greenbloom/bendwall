@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Independent oracle for the Bend scene model.
 
-Rules, from the REA findings (not from the Bend output):
+Rules checked against the project files rather than the Bend output:
 - type match is case-insensitive; a missing type is scene
 - preset overlays dependency properties by name; unknown names are appended
 - user overrides win over preset; existing property types are kept

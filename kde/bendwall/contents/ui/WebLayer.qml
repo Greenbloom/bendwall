@@ -3,7 +3,7 @@ import QtWebEngine
 
 /* Web wallpapers. QtWebEngine is loaded only when main.qml activates this
    file, so image wallpapers and the offscreen harness do not need it.
-   The shim is the page-side API from REA §12. The host pushes user
+   The shim is the page-side wallpaper API. The host pushes user
    properties and a 128-float spectrum (left 0..63, right 64..127). */
 Item {
     id: host

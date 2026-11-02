@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check Bend pkg/tex output against an independent reader and the REA oracles."""
+"""Check Bend pkg/tex output against an independent reader."""
 import os, struct, sys, zlib
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import wetex, wepkg

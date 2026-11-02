@@ -1,4 +1,4 @@
-/* Wallpaper Engine web host surface, from REA §12.
+/* Page-side wallpaper API.
    The Plasma package injects this script into the page at document creation. */
 var bendwallProps = {};
 var bendwallAudioFn = null;

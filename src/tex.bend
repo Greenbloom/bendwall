@@ -4,7 +4,7 @@ import ./spec.bend as Spec
 import ./str.bend as S
 import ./lz4.bend as L
 
-# .tex reader. Layout is REA-FINDINGS §4: TEXV, TEXI, TEXB, optional TEXS.
+# .tex reader. Layout is TEXV, TEXI, TEXB, and an optional TEXS.
 # LZ4 bit0 is a raw block. FreeImage payloads stay intact for the image effect.
 # rg88 / r8 expansion is separate (`expand`). DXT stays compressed.
 

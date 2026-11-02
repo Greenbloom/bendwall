@@ -1,7 +1,7 @@
 /* Scene picture resolution. Top-level project.json keys, then
    object → model json → material json → texture. An image value may be
    that path or an object carrying it (file / path / model / value) or a
-   material reference. .tex is TEXV/TEXI/TEXB (REA §4): LZ4 block, raw
+   material reference. .tex is TEXV/TEXI/TEXB: LZ4 block, raw
    rgba/rg/r, DXT, an embedded PNG/JPEG, and TEXS frames. The same entry
    point feeds the player and the probe. */
 #include "plan.h"

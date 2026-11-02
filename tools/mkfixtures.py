@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Synthetic Wallpaper Engine pkg/tex fixtures. No Workshop bytes.
 
-Layouts follow REA-FINDINGS §3 and §4. Expected pixels are the bytes we put in,
+Layouts follow the pkg and tex container fields. Expected pixels are the bytes we put in,
 not the output of the Bend parser.
 """
 import os, struct, subprocess, zlib

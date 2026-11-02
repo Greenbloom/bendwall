@@ -7,7 +7,7 @@ import ./gaps.bend as Gaps
 
 # One Workshop item after project.json is read.
 # Status is loaded, partial, or unsupported. The third column is the feature
-# that is missing or only partly run (REA §2, §16).
+# that is missing or only partly run.
 type Job is Data:
   Job{id: String, dir: String, root: String, typ: String, file: String, dep: String, assets: String}
 

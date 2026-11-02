@@ -29,6 +29,25 @@ export BENDWALL_NATIVE="$PWD/host/libbendwall.so"
 ./build/kde/bendwall-preview --play-frames "$PWD/fixtures/play/video" 8 > build/preview-play.out
 python3 tools/check_preview_play.py build/preview-play.out
 python3 tools/mktexscene.py
+QT_QPA_PLATFORM=offscreen timeout 40 ./build/kde/bendwall-preview --flicker "$PWD/fixtures/play/city" > build/flicker.out
+python3 - <<'PY'
+import pathlib, re, sys
+text = pathlib.Path("build/flicker.out").read_text()
+m = re.search(
+    r"FLICKER grabs=(\d+) grabblue=(\d+) grabblack=(\d+) frameblue=(\d+) frameblack=(\d+)",
+    text,
+)
+if not m:
+    raise SystemExit(text)
+grabs, grabblue, grabblack, frameblue, frameblack = (int(x) for x in m.groups())
+if grabs < 4 or frameblue < 4 or frameblack != 0 or grabblack != 0:
+    raise SystemExit(text)
+if grabblue and grabblue < 4:
+    raise SystemExit(text)
+if "read 0.0" not in text:
+    raise SystemExit("zero-copy readback did not stay off\n" + text)
+print("FLICKER PASS")
+PY
 ./build/kde/bendwall-preview --play-frames "$PWD/fixtures/play/gifscene" 4 > build/preview-gif.out
 python3 tools/check_preview_play.py build/preview-gif.out
 QT_QPA_PLATFORM=offscreen timeout 20 ./build/kde/bendwall-preview --watch-check "$PWD/fixtures/play/web" > build/watch-web.out

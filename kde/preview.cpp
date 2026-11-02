@@ -17,6 +17,7 @@
 #include <QPainter>
 #include <QPaintEvent>
 #include <QQmlApplicationEngine>
+#include <QQmlComponent>
 #include <QQmlContext>
 #include <QQmlError>
 #include <QQuickWindow>
@@ -395,6 +396,127 @@ static int watchDiff(const QString& dir, bool audio) {
     return 0;
 }
 
+/* Majority of an 8×8 grid. city is the blue plate; the other check is a
+   near-black frame. The FBO clear (18,20,24) is neither. */
+static int gridMajority(const QImage& img, int city) {
+    if (img.isNull() || img.width() < 8 || img.height() < 8) return 0;
+    const QImage rgb = img.convertToFormat(QImage::Format_RGB32);
+    int stepX = rgb.width() / 8;
+    int stepY = rgb.height() / 8;
+    int n = 0, hit = 0;
+    if (stepX < 1) stepX = 1;
+    if (stepY < 1) stepY = 1;
+    for (int y = stepY / 2; y < rgb.height(); y += stepY) {
+        for (int x = stepX / 2; x < rgb.width(); x += stepX) {
+            const QRgb p = rgb.pixel(x, y);
+            const int r = qRed(p), g = qGreen(p), b = qBlue(p);
+            n++;
+            if (city) {
+                if (b > 150 && r < 80) hit++;
+            } else if (r + g + b < 12) {
+                hit++;
+            }
+        }
+    }
+    return n > 0 && hit * 2 > n;
+}
+
+/* Two wallpaper windows share the process player, the same way two screens
+   do. After both have stepped past the second open, a grab that is mostly
+   black is the zero-copy flicker. */
+static int flickerCheck(const QString& dir) {
+    QQuickWindow::setGraphicsApi(QSGRendererInterface::OpenGL);
+    QQmlApplicationEngine engine;
+    QList<QQmlError> errs;
+    const QString qml = watchQmlPath();
+    if (qml.isEmpty()) {
+        std::cerr << "watch.qml not found\n";
+        return 1;
+    }
+    QObject::connect(&engine, &QQmlApplicationEngine::warnings,
+                     [&errs](const QList<QQmlError>& w) { errs += w; });
+    addImports(&engine);
+    const QString abs = QFileInfo(dir).absoluteFilePath();
+    engine.rootContext()->setContextProperty(QStringLiteral("wallpaperDir"), abs);
+    engine.rootContext()->setContextProperty(QStringLiteral("wallpaperKind"), topType(abs));
+    engine.rootContext()->setContextProperty(QStringLiteral("wallpaperAudio"), false);
+    engine.rootContext()->setContextProperty(QStringLiteral("bendwallQtVersion"), QString::fromLatin1(qVersion()));
+    QQmlComponent comp(&engine, QUrl::fromLocalFile(qml));
+    if (comp.isError()) {
+        for (const QQmlError& err : comp.errors())
+            std::cerr << err.toString().toStdString() << "\n";
+        return 1;
+    }
+    QObject* oa = comp.create(engine.rootContext());
+    QObject* ob = comp.create(engine.rootContext());
+    auto* wa = qobject_cast<QQuickWindow*>(oa);
+    auto* wb = qobject_cast<QQuickWindow*>(ob);
+    if (!wa || !wb) {
+        std::cerr << "flicker windows missing\n";
+        return 1;
+    }
+    wa->resize(320, 180);
+    wb->resize(320, 180);
+    wa->show();
+    wb->show();
+    QElapsedTimer clock;
+    clock.start();
+    QObject* fa = nullptr;
+    QObject* fb = nullptr;
+    while (clock.elapsed() < 4000) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 40);
+        fa = wa->findChild<QObject*>(QStringLiteral("bendwallFrame"));
+        fb = wb->findChild<QObject*>(QStringLiteral("bendwallFrame"));
+        if (fa && fb && fa->property("steps").toInt() >= 2 && fb->property("steps").toInt() >= 2)
+            break;
+    }
+    const int sa = fa ? fa->property("steps").toInt() : 0;
+    const int sb = fb ? fb->property("steps").toInt() : 0;
+    if (!fa || !fb || sa < 2 || sb < 2) {
+        std::printf("FLICKER grabs=0 grabblue=0 grabblack=0 frameblue=0 frameblack=0 steps=%d %d\n", sa, sb);
+        return 1;
+    }
+    int grabs = 0, grabblue = 0, grabblack = 0, seen = 0;
+    int frameblue = 0, frameblack = 0;
+    QObject* frames[2] = {fa, fb};
+    QQuickWindow* wins[2] = {wa, wb};
+    for (int i = 0; i < 8; i++) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 30);
+        for (int w = 0; w < 2; w++) {
+            const QImage shot = wins[w]->grabWindow();
+            grabs++;
+            if (gridMajority(shot, 0)) {
+                if (seen) grabblack++;
+            } else if (gridMajority(shot, 1)) {
+                seen = 1;
+                grabblue++;
+            }
+            const QImage frame = frames[w]->property("frameImage").value<QImage>();
+            if (gridMajority(frame, 0)) frameblack++;
+            else if (gridMajority(frame, 1)) frameblue++;
+        }
+    }
+    QString stats;
+    clock.restart();
+    while (clock.elapsed() < 2000) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 40);
+        stats = fa->property("statsText").toString();
+        if (stats.contains(QStringLiteral("read "))) break;
+    }
+    const QByteArray statsB = stats.toUtf8();
+    std::printf("FLICKER grabs=%d grabblue=%d grabblack=%d frameblue=%d frameblack=%d steps=%d %d\n",
+                grabs, grabblue, grabblack, frameblue, frameblack, sa, sb);
+    std::printf("FLICKER stats=%s\n", statsB.constData());
+    for (const QQmlError& err : errs) {
+        const QByteArray line = err.toString().toUtf8();
+        std::printf("FLICKERWARN %s\n", line.constData());
+    }
+    if (grabs < 4 || frameblue < 4 || frameblack != 0 || grabblack != 0) return 1;
+    if (grabblue > 0 && grabblue < 4) return 1;
+    if (!stats.contains(QStringLiteral("read 0.0"))) return 1;
+    return 0;
+}
+
 int main(int argc, char** argv) {
     const std::string cmd = argc > 1 ? argv[1] : "";
     /* WebEngineView stays uncreatable until this runs, and it has to run
@@ -447,6 +569,10 @@ int main(int argc, char** argv) {
         QGuiApplication app(argc, argv);
         return wallpaperRoot();
     }
+    if (cmd == "--flicker" && argc >= 3) {
+        QGuiApplication app(argc, argv);
+        return flickerCheck(QString::fromLocal8Bit(argv[2]));
+    }
     std::cerr << "usage:\n"
               << "  bendwall-preview --dump-props <project.json>\n"
               << "  bendwall-preview --dump-workshop <workshop-root>\n"
@@ -455,6 +581,7 @@ int main(int argc, char** argv) {
               << "  bendwall-preview --watch <item-dir> [--audio]\n"
               << "  bendwall-preview --watch-check <item-dir> [--audio]\n"
               << "  bendwall-preview --watch-diff <item-dir> [--audio]\n"
-              << "  bendwall-preview --wallpaper-root\n";
+              << "  bendwall-preview --wallpaper-root\n"
+              << "  bendwall-preview --flicker <item-dir>\n";
     return 2;
 }

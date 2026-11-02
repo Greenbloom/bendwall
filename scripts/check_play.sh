@@ -5,7 +5,7 @@ cd "$(dirname "$0")/.."
 export LIBGL_ALWAYS_SOFTWARE=1
 export BENDWALL_NATIVE="$PWD/host/libbendwall.so"
 scripts/lib.sh
-cc -O2 -o build/playmain host/playmain.c -Ihost \
+cc -O2 -pthread -o build/playmain host/playmain.c -Ihost \
   "$PWD/host/libbendwall.so" -Wl,-rpath,"$PWD/host" -lEGL -lGL -lm
 mkdir -p build
 python3 tools/mktexscene.py

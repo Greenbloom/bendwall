@@ -9,6 +9,8 @@
 #include <GL/gl.h>
 #include <locale.h>
 #include <math.h>
+#include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -150,6 +152,60 @@ static int blit_sample(int* r, int* g, int* b) {
   eglDestroyContext(dpy, ctx);
   eglDestroySurface(dpy, surf);
   return 1;
+}
+
+void* bw_gl_color_image(void);
+
+struct Flick {
+  EGLDisplay dpy;
+  EGLSurface surf;
+  EGLContext ctx;
+  atomic_int* stop;
+  atomic_int* ok;
+  atomic_int* black;
+};
+
+static int peer_pbuffer(EGLDisplay dpy, EGLSurface* surf, EGLContext* ctx) {
+  EGLConfig cfg;
+  EGLint n = 0;
+  EGLint attr[] = {
+    EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
+    EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
+    EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_ALPHA_SIZE, 8,
+    EGL_NONE
+  };
+  EGLint pbuf[] = {EGL_WIDTH, 32, EGL_HEIGHT, 32, EGL_NONE};
+  EGLint ctxattr[] = {
+    EGL_CONTEXT_MAJOR_VERSION, 3,
+    EGL_CONTEXT_MINOR_VERSION, 3,
+    EGL_CONTEXT_OPENGL_PROFILE_MASK, EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT,
+    EGL_NONE
+  };
+  if (!eglBindAPI(EGL_OPENGL_API)) return 0;
+  if (!eglChooseConfig(dpy, attr, &cfg, 1, &n) || n < 1) return 0;
+  *surf = eglCreatePbufferSurface(dpy, cfg, pbuf);
+  *ctx = eglCreateContext(dpy, cfg, EGL_NO_CONTEXT, ctxattr);
+  if (*ctx == EGL_NO_CONTEXT) *ctx = eglCreateContext(dpy, cfg, EGL_NO_CONTEXT, NULL);
+  return *surf != EGL_NO_SURFACE && *ctx != EGL_NO_CONTEXT;
+}
+
+static void* flicker_thread(void* arg) {
+  struct Flick* f = (struct Flick*)arg;
+  uint8_t px[4];
+  if (!eglMakeCurrent(f->dpy, f->surf, f->surf, f->ctx)) return NULL;
+  glViewport(0, 0, 32, 32);
+  while (!atomic_load(f->stop)) {
+    if (!bw_play_blit()) {
+      usleep(1000);
+      continue;
+    }
+    glReadPixels(16, 16, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    if ((int)px[0] + (int)px[1] + (int)px[2] < 8) atomic_fetch_add(f->black, 1);
+    else atomic_fetch_add(f->ok, 1);
+    usleep(1000);
+  }
+  eglMakeCurrent(f->dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+  return NULL;
 }
 
 static int color_count(int want_r, int want_g) {
@@ -1257,6 +1313,63 @@ int main(int argc, char** argv) {
       bok = blit_sample(&br, &bg, &bb);
       printf("BLIT ok=%d %d %d %d\n", bok, br, bg, bb);
       if (!bok || bb < 10) bad = 1;
+    }
+    {
+      void* imgs[8];
+      int ni = 0, k, u, seen;
+      for (k = 0; k < 6; k++) {
+        void* img;
+        if (!bw_play_step(33)) return 1;
+        img = bw_gl_color_image();
+        if (!img) {
+          bad = 1;
+          break;
+        }
+        seen = 0;
+        for (u = 0; u < ni; u++) if (imgs[u] == img) seen = 1;
+        if (!seen && ni < 8) imgs[ni++] = img;
+      }
+      printf("RING %d\n", ni);
+      if (ni < 3) bad = 1;
+    }
+    {
+      EGLDisplay dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+      struct Flick fa, fb;
+      pthread_t ta, tb;
+      atomic_int stop = 0, ok = 0, black = 0;
+      int started = 0, i;
+      fa.surf = fb.surf = EGL_NO_SURFACE;
+      fa.ctx = fb.ctx = EGL_NO_CONTEXT;
+      if (dpy != EGL_NO_DISPLAY && eglInitialize(dpy, NULL, NULL)
+          && peer_pbuffer(dpy, &fa.surf, &fa.ctx)
+          && peer_pbuffer(dpy, &fb.surf, &fb.ctx)) {
+        fa.dpy = fb.dpy = dpy;
+        fa.stop = fb.stop = &stop;
+        fa.ok = fb.ok = &ok;
+        fa.black = fb.black = &black;
+        if (pthread_create(&ta, NULL, flicker_thread, &fa) != 0) {
+          started = 0;
+        } else if (pthread_create(&tb, NULL, flicker_thread, &fb) != 0) {
+          atomic_store(&stop, 1);
+          pthread_join(ta, NULL);
+        } else {
+          started = 1;
+          for (i = 0; i < 8; i++) {
+            if (!bw_play_step(33)) bad = 1;
+            usleep(4000);
+          }
+          atomic_store(&stop, 1);
+          pthread_join(ta, NULL);
+          pthread_join(tb, NULL);
+        }
+      }
+      if (!started) bad = 1;
+      printf("FLICKER ok=%d black=%d\n", atomic_load(&ok), atomic_load(&black));
+      if (atomic_load(&ok) < 4 || atomic_load(&black) != 0) bad = 1;
+      if (fa.ctx != EGL_NO_CONTEXT) eglDestroyContext(dpy, fa.ctx);
+      if (fb.ctx != EGL_NO_CONTEXT) eglDestroyContext(dpy, fb.ctx);
+      if (fa.surf != EGL_NO_SURFACE) eglDestroySurface(dpy, fa.surf);
+      if (fb.surf != EGL_NO_SURFACE) eglDestroySurface(dpy, fb.surf);
     }
     bw_play_set_readback(1);
   }

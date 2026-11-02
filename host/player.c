@@ -42,6 +42,10 @@ int bw_gl_fvn(int prog, const char* name, const float* v, int count);
 int bw_gl_read(uint8_t* dst, int n);
 int bw_gl_export_color(void);
 void* bw_gl_color_image(void);
+void* bw_gl_present_begin(void);
+void bw_gl_present_end(void);
+int bw_gl_present_epoch(void);
+int bw_gl_bind_shown(void);
 const char* bw_gl_log(void);
 int bw_gl_vendor_match(const char* peer);
 int bw_gl_peer_mismatch(void);
@@ -1783,7 +1787,7 @@ int bw_play_rgba(uint8_t* dst, int cap) {
     uint8_t* next;
     int got;
     if (!bw_gl_begin()) goto rgba_out;
-    if (!bw_gl_bind(0)) { bw_gl_end(); goto rgba_out; }
+    if (!bw_gl_bind_shown()) { bw_gl_end(); goto rgba_out; }
     next = (uint8_t*)realloc(g_px, (size_t)n);
     if (!next) { bw_gl_end(); goto rgba_out; }
     g_px = next;
@@ -1832,7 +1836,7 @@ void bw_play_profile(int* sim_us, int* gl_us, int* read_us) {
 
 int bw_play_exported(void) { return bw_gl_color_image() != NULL; }
 
-static int blit_unlocked(void) {
+static int blit_prog(EGLContext cur, GLuint* prog, GLuint* vao) {
   static const char* vs =
     "#version 330 core\n"
     "layout(location=0) in vec2 a;\n"
@@ -1847,16 +1851,77 @@ static int blit_unlocked(void) {
     "uniform sampler2D g_Texture0;\n"
     "out vec4 fragColor;\n"
     "void main(){ fragColor = texture(g_Texture0, v); }\n";
-  static GLuint prog, vao, buf, tex;
-  static EGLContext ctx = EGL_NO_CONTEXT;
+  static struct {
+    EGLContext ctx;
+    GLuint prog, vao, buf;
+  } gpu[4];
+  int i, free_gpu = -1;
+  for (i = 0; i < 4; i++) {
+    if (gpu[i].ctx == cur && gpu[i].prog) {
+      *prog = gpu[i].prog;
+      *vao = gpu[i].vao;
+      return 1;
+    }
+    if (free_gpu < 0 && !gpu[i].prog) free_gpu = i;
+  }
+  if (free_gpu < 0) return 0;
+  {
+    GLuint vsid, fsid, p, va, buf;
+    const float quad[8] = {-1.f, -1.f, 1.f, -1.f, -1.f, 1.f, 1.f, 1.f};
+    int ok;
+    vsid = glCreateShader(GL_VERTEX_SHADER);
+    fsid = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(vsid, 1, &vs, NULL);
+    glShaderSource(fsid, 1, &fs, NULL);
+    glCompileShader(vsid);
+    glCompileShader(fsid);
+    p = glCreateProgram();
+    glAttachShader(p, vsid);
+    glAttachShader(p, fsid);
+    glBindAttribLocation(p, 0, "a");
+    glLinkProgram(p);
+    glGetProgramiv(p, GL_LINK_STATUS, &ok);
+    glDeleteShader(vsid);
+    glDeleteShader(fsid);
+    if (!ok) {
+      glDeleteProgram(p);
+      return 0;
+    }
+    glGenVertexArrays(1, &va);
+    glGenBuffers(1, &buf);
+    glBindVertexArray(va);
+    glBindBuffer(GL_ARRAY_BUFFER, buf);
+    glBufferData(GL_ARRAY_BUFFER, sizeof quad, quad, GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, (void*)0);
+    glEnableVertexAttribArray(0);
+    glBindVertexArray(0);
+    gpu[free_gpu].ctx = cur;
+    gpu[free_gpu].prog = p;
+    gpu[free_gpu].vao = va;
+    gpu[free_gpu].buf = buf;
+    *prog = p;
+    *vao = va;
+  }
+  return 1;
+}
+
+static int blit_unlocked(void) {
+  enum { CONS_N = 8 };
+  static struct {
+    EGLContext ctx;
+    void* img;
+    GLuint tex;
+  } cons[CONS_N];
+  static int cons_epoch;
   static int failed;
-  void* img = bw_gl_color_image();
+  void* img;
   EGLContext cur;
   typedef void (*PFN_TARGET)(GLenum, void*);
   PFN_TARGET target;
+  GLuint tex = 0, prog = 0, vao = 0;
   GLint loc;
+  int i, slot;
   if (g_force_readback || readback_env()) return 0;
-  if (!img) return 0;
   cur = eglGetCurrentContext();
   if (cur == EGL_NO_CONTEXT) return 0;
   {
@@ -1866,64 +1931,64 @@ static int blit_unlocked(void) {
       return 0;
     }
   }
-  if (cur != ctx) {
-    prog = vao = buf = tex = 0;
-    ctx = cur;
+  if (bw_gl_present_epoch() != cons_epoch) {
+    for (i = 0; i < CONS_N; i++) {
+      if (cons[i].tex && cons[i].ctx == cur) glDeleteTextures(1, &cons[i].tex);
+      cons[i].tex = 0;
+      cons[i].img = NULL;
+      cons[i].ctx = EGL_NO_CONTEXT;
+    }
+    cons_epoch = bw_gl_present_epoch();
     failed = 0;
   }
   if (failed) return 0;
+  /* Wait until the player's draws of this frame have landed, then sample
+     that slot's image. The image is imported once per Qt context. */
+  img = bw_gl_present_begin();
+  if (!img) return 0;
   target = (PFN_TARGET)eglGetProcAddress("glEGLImageTargetTexture2DOES");
-  if (!target) {
-    failed = 1;
+  if (!target || !blit_prog(cur, &prog, &vao)) {
+    bw_gl_present_end();
+    if (!target) failed = 1;
     return 0;
   }
-  if (!prog) {
-    GLuint vsid, fsid;
-    const float quad[8] = {-1.f, -1.f, 1.f, -1.f, -1.f, 1.f, 1.f, 1.f};
-    int ok;
-    vsid = glCreateShader(GL_VERTEX_SHADER);
-    fsid = glCreateShader(GL_FRAGMENT_SHADER);
-    glShaderSource(vsid, 1, &vs, NULL);
-    glShaderSource(fsid, 1, &fs, NULL);
-    glCompileShader(vsid);
-    glCompileShader(fsid);
-    prog = glCreateProgram();
-    glAttachShader(prog, vsid);
-    glAttachShader(prog, fsid);
-    glBindAttribLocation(prog, 0, "a");
-    glLinkProgram(prog);
-    glGetProgramiv(prog, GL_LINK_STATUS, &ok);
-    glDeleteShader(vsid);
-    glDeleteShader(fsid);
-    if (!ok) {
-      glDeleteProgram(prog);
-      prog = 0;
-      failed = 1;
+  slot = -1;
+  for (i = 0; i < CONS_N; i++) {
+    if (cons[i].ctx == cur && cons[i].img == img && cons[i].tex) {
+      tex = cons[i].tex;
+      break;
+    }
+    if (slot < 0 && !cons[i].tex) slot = i;
+  }
+  if (!tex) {
+    if (slot < 0) {
+      bw_gl_present_end();
       return 0;
     }
-    glGenVertexArrays(1, &vao);
-    glGenBuffers(1, &buf);
-    glBindVertexArray(vao);
-    glBindBuffer(GL_ARRAY_BUFFER, buf);
-    glBufferData(GL_ARRAY_BUFFER, sizeof quad, quad, GL_STATIC_DRAW);
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, (void*)0);
-    glEnableVertexAttribArray(0);
-    glBindVertexArray(0);
     glGenTextures(1, &tex);
     glBindTexture(GL_TEXTURE_2D, tex);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glGetError();
+    target(GL_TEXTURE_2D, img);
+    if (glGetError() != GL_NO_ERROR) {
+      glDeleteTextures(1, &tex);
+      bw_gl_present_end();
+      g_force_readback = 1;
+      failed = 1;
+      return 0;
+    }
+    cons[slot].ctx = cur;
+    cons[slot].img = img;
+    cons[slot].tex = tex;
   }
+  glDisable(GL_SCISSOR_TEST);
+  glDisable(GL_DEPTH_TEST);
+  glDisable(GL_BLEND);
+  glActiveTexture(GL_TEXTURE0);
   glBindTexture(GL_TEXTURE_2D, tex);
-  glGetError();
-  target(GL_TEXTURE_2D, img);
-  if (glGetError() != GL_NO_ERROR) {
-    g_force_readback = 1;
-    failed = 1;
-    return 0;
-  }
   glUseProgram(prog);
   loc = glGetUniformLocation(prog, "g_Texture0");
   if (loc >= 0) glUniform1i(loc, 0);
@@ -1932,6 +1997,7 @@ static int blit_unlocked(void) {
   glBindVertexArray(0);
   glUseProgram(0);
   glBindTexture(GL_TEXTURE_2D, 0);
+  bw_gl_present_end();
   return 1;
 }
 

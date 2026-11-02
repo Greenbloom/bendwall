@@ -35,7 +35,8 @@ void bw_play_set_readback(int on);
 void bw_play_pointer(float x, float y, float item_w, float item_h, int valid);
 /* Last frame split, microseconds. Read is 0 when readback is off. */
 void bw_play_profile(int* sim_us, int* gl_us, int* read_us);
-/* Draw the color texture into the current GL context. 1 on success. */
+/* Sample the published color texture into the current GL framebuffer.
+   Three textures rotate so the one in this draw is not cleared. */
 int bw_play_blit(void);
 /* 1 after a present-path frame exported its color texture. */
 int bw_play_exported(void);

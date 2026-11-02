@@ -275,6 +275,14 @@ if int(live.group(8)) != 0:
 blit = grab(r"BLIT ok=(\d+) (\d+) (\d+) (\d+)")
 if blit.group(1) != "1" or int(blit.group(4)) < 10:
     raise SystemExit(blit.group(0))
+ring = grab(r"RING (\d+)")
+if int(ring.group(1)) < 3:
+    raise SystemExit(ring.group(0))
+flick = grab(r"FLICKER ok=(\d+) black=(\d+)")
+if int(flick.group(1)) < 4 or int(flick.group(2)) != 0:
+    raise SystemExit(flick.group(0))
+if "present slot busy" in err:
+    raise SystemExit("present slots stalled\n" + err)
 if "bendwall: renderer " not in err:
     raise SystemExit("renderer was not logged\n" + err)
 if "bendwall: unsupported particle emitter layerimage" not in err:

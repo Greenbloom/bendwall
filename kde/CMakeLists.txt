@@ -30,3 +30,7 @@ add_executable(bendwall-picker
     picker.qrc)
 target_link_libraries(bendwall-picker PRIVATE Qt6::Quick Qt6::Qml Qt6::Gui Qt6::OpenGL Qt6::DBus)
 target_link_libraries(bendwall-picker PRIVATE ${CMAKE_DL_LIBS})
+if (TARGET Qt6::WebEngineQuick)
+    target_link_libraries(bendwall-picker PRIVATE Qt6::WebEngineQuick)
+    target_compile_definitions(bendwall-picker PRIVATE BENDWALL_HAS_WEBENGINE=1)
+endif()

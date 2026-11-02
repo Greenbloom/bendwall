@@ -174,28 +174,59 @@ QString cacheDir() {
     return QDir::homePath() + QStringLiteral("/.cache/bendwall-picker/thumbs");
 }
 
+int frameScore(const QImage& src) {
+    if (src.isNull())
+        return 0;
+    const QImage img = src.convertToFormat(QImage::Format_ARGB32);
+    const int stepX = qMax(1, img.width() / 48);
+    const int stepY = qMax(1, img.height() / 48);
+    int score = 0;
+    for (int y = 0; y < img.height(); y += stepY) {
+        const QRgb* row = reinterpret_cast<const QRgb*>(img.constScanLine(y));
+        for (int x = 0; x < img.width(); x += stepX) {
+            const QRgb px = row[x];
+            if (qAlpha(px) > 16 && qRed(px) + qGreen(px) + qBlue(px) > 24)
+                ++score;
+        }
+    }
+    return score;
+}
+
+/* GIF frame 0 is often blank, and QImageReader::setScaledSize on a GIF can
+   come back black. Pick the frame that actually has pixels, then scale. */
 QString thumbFor(const QString& preview, const QString& cache) {
     if (preview.isEmpty() || !QFile::exists(preview))
         return QString();
     const QFileInfo info(preview);
     const QString key = QString::number(qHash(preview), 16) + QLatin1Char('_')
         + QString::number(info.size()) + QLatin1Char('_')
-        + QString::number(info.lastModified().toSecsSinceEpoch());
+        + QString::number(info.lastModified().toSecsSinceEpoch())
+        + QStringLiteral("_v2");
     const QString out = cache + QLatin1Char('/') + key + QStringLiteral(".png");
     if (QFile::exists(out))
         return out;
     QImageReader reader(preview);
     reader.setAutoTransform(true);
-    if (reader.canRead())
-        reader.jumpToImage(0);
-    const QSize size = reader.size();
-    if (size.width() > 480 && size.height() > 0)
-        reader.setScaledSize(QSize(480, qMax(1, 480 * size.height() / size.width())));
-    const QImage img = reader.read();
-    if (img.isNull())
+    QImage best;
+    int bestScore = 0;
+    for (int i = 0; i < 8; ++i) {
+        const QImage frame = reader.read();
+        if (frame.isNull())
+            break;
+        const int score = frameScore(frame);
+        if (score > bestScore) {
+            bestScore = score;
+            best = frame;
+        }
+    }
+    if (best.isNull() || bestScore <= 0)
         return preview;
+    if (best.width() > 480) {
+        const int h = qMax(1, 480 * best.height() / best.width());
+        best = best.scaled(480, h, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    }
     QDir().mkpath(cache);
-    if (!img.save(out, "PNG"))
+    if (!best.save(out, "PNG"))
         return preview;
     return out;
 }
@@ -286,6 +317,7 @@ Paper readPaper(const QString& dir, const QString& cache) {
             paper.note = QStringLiteral("Unsupported. The web page is missing.");
         } else {
             paper.liveOk = true;
+            paper.page = payload;
         }
     } else if (paper.type == QLatin1String("preset")) {
         paper.liveOk = false;
@@ -341,6 +373,7 @@ public slots:
                 map.insert(QStringLiteral("tags"), paper.tags);
                 map.insert(QStringLiteral("gif"), paper.gif);
                 map.insert(QStringLiteral("liveOk"), paper.liveOk);
+                map.insert(QStringLiteral("page"), paper.page);
                 emit itemReady(map);
                 ++n;
             }
@@ -385,6 +418,7 @@ QVariant Library::data(const QModelIndex& index, int role) const {
     case TagsRole: return paper.tags.join(QStringLiteral(", "));
     case GifRole: return paper.gif;
     case LiveRole: return paper.liveOk;
+    case PageRole: return paper.page;
     case ActiveRole: return m_active.value(paper.id);
     default: return QVariant();
     }
@@ -402,6 +436,7 @@ QHash<int, QByteArray> Library::roleNames() const {
         {TagsRole, "tags"},
         {GifRole, "gif"},
         {LiveRole, "liveOk"},
+        {PageRole, "pagePath"},
         {ActiveRole, "activeText"}
     };
 }
@@ -488,6 +523,7 @@ QVariantMap Library::paper(const QString& id) const {
         map.insert(QStringLiteral("note"), paper.note);
         map.insert(QStringLiteral("gif"), paper.gif);
         map.insert(QStringLiteral("liveOk"), paper.liveOk);
+        map.insert(QStringLiteral("page"), paper.page);
         return map;
     }
     return map;
@@ -513,6 +549,7 @@ void Library::addItem(const QVariantMap& item) {
     paper.dir = item.value(QStringLiteral("dir")).toString();
     paper.preview = item.value(QStringLiteral("preview")).toString();
     paper.thumb = item.value(QStringLiteral("thumb")).toString();
+    paper.page = item.value(QStringLiteral("page")).toString();
     paper.note = item.value(QStringLiteral("note")).toString();
     paper.tags = item.value(QStringLiteral("tags")).toStringList();
     paper.gif = item.value(QStringLiteral("gif")).toBool();

@@ -19,10 +19,13 @@ ApplicationWindow {
     property string currentKind: ""
     property string currentDir: ""
     property string currentPreview: ""
+    property string currentThumb: ""
+    property string currentPage: ""
     property string currentNote: ""
     property bool currentGif: false
     property bool currentLive: false
     property bool liveGaveUp: false
+    property bool showLive: currentLive && !liveGaveUp && liveFrame.hasPicture
 
     function selectMap(row) {
         currentId = row.id
@@ -30,9 +33,11 @@ ApplicationWindow {
         currentKind = row.kind
         currentDir = row.dir
         currentPreview = row.preview
+        currentThumb = row.thumb ? row.thumb : row.preview
+        currentPage = row.page ? row.page : ""
         currentNote = row.note
         currentGif = row.gif
-        currentLive = row.liveOk
+        currentLive = !!row.liveOk && row.kind !== "web"
         liveGaveUp = false
         if (currentLive)
             liveTimer.restart()
@@ -50,6 +55,8 @@ ApplicationWindow {
             kind: item.cardKind,
             dir: item.cardDir,
             preview: item.cardPreview,
+            thumb: item.cardThumb,
+            page: item.cardPage,
             note: item.cardNote,
             gif: item.cardGif,
             liveOk: item.cardLive
@@ -223,6 +230,7 @@ ApplicationWindow {
                         required property string dir
                         required property string preview
                         required property string thumb
+                        required property string pagePath
                         required property string note
                         required property string tags
                         required property bool gif
@@ -232,6 +240,8 @@ ApplicationWindow {
                         property string cardKind: kind
                         property string cardDir: dir
                         property string cardPreview: preview
+                        property string cardThumb: thumb
+                        property string cardPage: pagePath
                         property string cardNote: note
                         property bool cardGif: gif
                         property bool cardLive: liveOk
@@ -347,6 +357,8 @@ ApplicationWindow {
                                     kind: card.kind,
                                     dir: card.dir,
                                     preview: card.preview,
+                                    thumb: card.thumb,
+                                    page: card.pagePath,
                                     note: card.note,
                                     gif: card.gif,
                                     liveOk: card.liveOk
@@ -391,10 +403,13 @@ ApplicationWindow {
 
                     Image {
                         anchors.fill: parent
-                        source: win.currentPreview ? ("file:" + win.currentPreview) : ""
+                        source: {
+                            var still = win.currentThumb ? win.currentThumb : win.currentPreview
+                            return still ? ("file:" + still) : ""
+                        }
                         fillMode: Image.PreserveAspectCrop
                         asynchronous: false
-                        opacity: liveFrame.steps > 0 && win.currentLive && !win.liveGaveUp ? 0 : 1
+                        opacity: win.showLive || (webEngineOk && win.currentKind === "web" && win.currentPage !== "") ? 0 : 1
                         Behavior on opacity { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
                     }
                     Text {
@@ -410,11 +425,24 @@ ApplicationWindow {
                         id: liveFrame
                         anchors.fill: parent
                         live: win.currentLive && !win.liveGaveUp
+                        probePicture: true
                         videoMuted: true
                         videoVolume: 0
                         mediaDir: win.currentLive ? win.currentDir : ""
-                        opacity: win.currentLive && !win.liveGaveUp && steps > 0 ? 1 : 0
+                        opacity: win.showLive ? 1 : 0
                         Behavior on opacity { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+                    }
+                    Loader {
+                        id: webPreview
+                        anchors.fill: parent
+                        active: webEngineOk && win.currentKind === "web" && win.currentPage !== ""
+                        source: active ? "qrc:/WebPreview.qml" : ""
+                    }
+                    Binding {
+                        target: webPreview.item
+                        property: "pageUrl"
+                        value: win.currentPage
+                        when: webPreview.item !== null
                     }
                 }
 
@@ -435,6 +463,13 @@ ApplicationWindow {
                     text: {
                         if (win.currentId === "")
                             return "The grid lists items from your Steam library folders for app 431960."
+                        if (win.currentKind === "web") {
+                            if (win.currentNote !== "")
+                                return win.currentNote
+                            if (webEngineOk && win.currentPage !== "")
+                                return "The page is running here. Sound stays off."
+                            return "Showing the preview image. The page runs in the desktop wallpaper."
+                        }
                         if (!win.currentLive)
                             return win.currentNote !== "" ? win.currentNote : "Showing the preview image."
                         var missing = win.missCount(liveFrame.playerLine)
@@ -443,7 +478,11 @@ ApplicationWindow {
                         if (win.liveGaveUp)
                             return "Live preview did not start. Showing the preview image."
                               + (liveFrame.statsText ? " " + liveFrame.statsText : "")
-                        if (liveFrame.steps > 0)
+                        if (liveFrame.pictureBlank)
+                            return "Bendwall drew an empty frame. Showing the preview image."
+                        if (liveFrame.steps > 0 && !liveFrame.hasPicture)
+                            return "The live frame is still empty. Showing the preview image."
+                        if (liveFrame.hasPicture)
                             return "Live preview, muted."
                         return "Starting the live preview. Sound stays off."
                     }

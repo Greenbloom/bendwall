@@ -1,5 +1,6 @@
 <RCC>
     <qresource prefix="/">
         <file>Picker.qml</file>
+        <file>WebPreview.qml</file>
     </qresource>
 </RCC>

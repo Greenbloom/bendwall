@@ -8,6 +8,8 @@
 #include <QTimer>
 #include <QVariantList>
 
+#include <atomic>
+
 /* Live scene. The still PNG is the offscreen harness. A live window steps
    the player with readback off and blits the color texture on the GPU.
    frameImage readback is only for --watch-diff. */
@@ -28,6 +30,9 @@ class FrameItem : public QQuickFramebufferObject {
     Q_PROPERTY(bool videoMuted READ videoMuted WRITE setVideoMuted NOTIFY videoMutedChanged)
     Q_PROPERTY(bool videoAutoMute READ videoAutoMute WRITE setVideoAutoMute NOTIFY videoAutoMuteChanged)
     Q_PROPERTY(int steps READ steps NOTIFY stepsChanged)
+    Q_PROPERTY(bool probePicture READ probePicture WRITE setProbePicture NOTIFY probePictureChanged)
+    Q_PROPERTY(bool hasPicture READ hasPicture NOTIFY hasPictureChanged)
+    Q_PROPERTY(bool pictureBlank READ pictureBlank NOTIFY pictureBlankChanged)
     Q_PROPERTY(QImage frameImage READ frameImage)
 
 public:
@@ -47,7 +52,14 @@ public:
     bool videoMuted() const { return m_mute; }
     bool videoAutoMute() const { return m_auto; }
     int steps() const { return m_steps; }
+    bool probePicture() const { return m_probe; }
+    bool hasPicture() const { return m_hasPicture.load(); }
+    bool pictureBlank() const { return m_pictureBlank.load(); }
     QImage frameImage() const;
+    void setProbePicture(bool on);
+    /* Render thread. Atomically records whether the FBO had pixels. */
+    void reportProbe(bool content);
+    bool wantProbe() const { return m_wantProbe.load() != 0; }
     void setFramePath(const QString& path);
     void setPointerX(qreal x);
     void setPointerY(qreal y);
@@ -77,11 +89,17 @@ signals:
     void videoMutedChanged();
     void videoAutoMuteChanged();
     void stepsChanged();
+    void probePictureChanged();
+    void hasPictureChanged();
+    void pictureBlankChanged();
 
 private:
     void ensureTimer();
     void reopen();
     void tick();
+    void clearPicture();
+    void syncProbeFlag();
+    void consumeProbe();
 
     QString m_path;
     QImage m_still;
@@ -103,6 +121,12 @@ private:
     QTimer* m_timer = nullptr;
     int m_frames = 0;
     int m_steps = 0;
+    bool m_probe = false;
+    std::atomic<int> m_hasPicture{0};
+    std::atomic<int> m_pictureBlank{0};
+    std::atomic<int> m_wantProbe{0};
+    std::atomic<int> m_probeHits{0};
+    std::atomic<int> m_probeEmpty{0};
     long m_ticks = 0;
     qint64 m_mark = 0;
 };

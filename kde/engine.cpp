@@ -63,6 +63,7 @@ Api& api() {
     paths << (app + "/libbendwall.so");
     paths << (app + "/../../host/libbendwall.so");
     paths << QStringLiteral("host/libbendwall.so");
+    paths << (QDir::homePath() + QStringLiteral("/.local/lib/qt6/qml/com/philip/bendwall/libbendwall.so"));
     paths << QStringLiteral("libbendwall.so");
     QString tried;
     for (const QString& path : paths) {

@@ -12,6 +12,8 @@
 #include <QOpenGLShaderProgram>
 #include <QtQuick/qquickopenglutils.h>
 
+#include <algorithm>
+
 namespace {
 
 class FrameRenderer : public QQuickFramebufferObject::Renderer {
@@ -21,6 +23,8 @@ public:
         m_live = frame->live();
         m_still = frame->stillImage();
         m_engine = frame->engine();
+        m_frame = frame;
+        m_probe = frame->wantProbe();
     }
 
     void render() override {
@@ -32,11 +36,11 @@ public:
             gl->glClearColor(18.f / 255.f, 20.f / 255.f, 24.f / 255.f, 1.f);
             gl->glClear(GL_COLOR_BUFFER_BIT);
         }
-        if (m_live && m_engine && m_engine->blit()) {
-            if (ctx) QQuickOpenGLUtils::resetOpenGLState();
-            return;
-        }
-        drawImage(m_live && m_engine ? m_engine->image() : m_still);
+        const bool blitted = m_live && m_engine && m_engine->blit();
+        if (!blitted)
+            drawImage(m_live && m_engine ? m_engine->image() : m_still);
+        if (m_probe && m_live && m_frame && gl)
+            m_frame->reportProbe(sampleContent(gl));
         if (ctx) QQuickOpenGLUtils::resetOpenGLState();
     }
 
@@ -50,6 +54,41 @@ public:
     }
 
 private:
+    /* An empty FBO is the clear color (18, 20, 24) or a near-black frame.
+       A checker, a video, or a scene with any real pixel counts. */
+    static bool sampleContent(QOpenGLFunctions* gl) {
+        GLint vp[4] = {0, 0, 0, 0};
+        gl->glGetIntegerv(GL_VIEWPORT, vp);
+        const int w = vp[2];
+        const int h = vp[3];
+        if (w < 2 || h < 2)
+            return false;
+        int maxC = 0;
+        int minR = 255, maxR = 0, minG = 255, maxG = 0, minB = 255, maxB = 0;
+        bool above = false;
+        for (int gy = 0; gy < 8; ++gy) {
+            for (int gx = 0; gx < 8; ++gx) {
+                const int x = std::min(w - 1, (gx * 2 + 1) * w / 16);
+                const int y = std::min(h - 1, (gy * 2 + 1) * h / 16);
+                unsigned char px[4] = {0, 0, 0, 0};
+                gl->glReadPixels(x, y, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+                maxC = std::max(maxC, std::max((int)px[0], std::max((int)px[1], (int)px[2])));
+                minR = std::min(minR, (int)px[0]);
+                maxR = std::max(maxR, (int)px[0]);
+                minG = std::min(minG, (int)px[1]);
+                maxG = std::max(maxG, (int)px[1]);
+                minB = std::min(minB, (int)px[2]);
+                maxB = std::max(maxB, (int)px[2]);
+                if (px[0] >= 48 || px[1] >= 48 || px[2] >= 48)
+                    above = true;
+            }
+        }
+        if (maxC < 12)
+            return false;
+        const bool varied = (maxR - minR) > 20 || (maxG - minG) > 20 || (maxB - minB) > 20;
+        return above || varied;
+    }
+
     void drawImage(const QImage& img) {
         QOpenGLContext* ctx = QOpenGLContext::currentContext();
         if (!ctx || img.isNull()) return;
@@ -103,6 +142,8 @@ private:
     }
 
     bool m_live = false;
+    bool m_probe = false;
+    FrameItem* m_frame = nullptr;
     Engine* m_engine = nullptr;
     QImage m_still;
     QOpenGLShaderProgram* m_prog = nullptr;
@@ -142,6 +183,63 @@ void FrameItem::setPointerY(qreal y) {
     m_py = y;
     m_havePtr = true;
     emit pointerChanged();
+}
+
+void FrameItem::setProbePicture(bool on) {
+    if (m_probe == on)
+        return;
+    m_probe = on;
+    syncProbeFlag();
+    emit probePictureChanged();
+    update();
+}
+
+void FrameItem::reportProbe(bool content) {
+    if (content)
+        m_probeHits.store(1);
+    else
+        m_probeEmpty.fetch_add(1);
+}
+
+void FrameItem::clearPicture() {
+    const bool had = m_hasPicture.exchange(0) != 0;
+    const bool blank = m_pictureBlank.exchange(0) != 0;
+    m_probeHits.store(0);
+    m_probeEmpty.store(0);
+    syncProbeFlag();
+    if (had)
+        emit hasPictureChanged();
+    if (blank)
+        emit pictureBlankChanged();
+}
+
+void FrameItem::syncProbeFlag() {
+    const bool on = m_probe && m_steps > 0 && m_kind != QLatin1String("video") && m_kind != QLatin1String("web")
+        && m_hasPicture.load() == 0 && m_pictureBlank.load() == 0;
+    m_wantProbe.store(on ? 1 : 0);
+}
+
+void FrameItem::consumeProbe() {
+    if (m_kind == QLatin1String("video")) {
+        if (m_steps > 0 && m_hasPicture.load() == 0) {
+            m_hasPicture.store(1);
+            emit hasPictureChanged();
+        }
+        syncProbeFlag();
+        return;
+    }
+    if (m_hasPicture.load() != 0 || m_pictureBlank.load() != 0) {
+        syncProbeFlag();
+        return;
+    }
+    if (m_probeHits.load() > 0) {
+        m_hasPicture.store(1);
+        emit hasPictureChanged();
+    } else if (m_probeEmpty.load() >= 40) {
+        m_pictureBlank.store(1);
+        emit pictureBlankChanged();
+    }
+    syncProbeFlag();
 }
 
 void FrameItem::setLive(bool on) {
@@ -211,6 +309,7 @@ void FrameItem::reopen() {
     m_kind.clear();
     m_page.clear();
     m_steps = 0;
+    clearPicture();
 }
 
 QQuickFramebufferObject::Renderer* FrameItem::createRenderer() const {
@@ -246,6 +345,7 @@ void FrameItem::tick() {
         }
         m_kind = m_engine.kind();
         m_page = m_engine.page();
+        syncProbeFlag();
         emit kindChanged();
         emit pageUrlChanged();
         emit statsChanged();
@@ -269,6 +369,7 @@ void FrameItem::tick() {
         m_steps++;
         emit stepsChanged();
     }
+    consumeProbe();
     m_audio = m_engine.audio();
     emit audioSamplesChanged();
     m_frames++;

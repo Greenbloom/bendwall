@@ -9,8 +9,13 @@
 #include <QQmlContext>
 #include <QQmlError>
 #include <QQuickWindow>
+#include <QSGRendererInterface>
 #include <QTimer>
 #include <QEventLoop>
+
+#ifdef BENDWALL_HAS_WEBENGINE
+#include <QtWebEngineQuick/qtwebenginequickglobal.h>
+#endif
 
 namespace {
 
@@ -152,6 +157,8 @@ int runCheck(QGuiApplication* app, QQmlApplicationEngine* engine, Library* libra
         window->setProperty("currentKind", chosen.value(QStringLiteral("type")));
         window->setProperty("currentDir", chosen.value(QStringLiteral("dir")));
         window->setProperty("currentPreview", chosen.value(QStringLiteral("preview")));
+        window->setProperty("currentThumb", chosen.value(QStringLiteral("thumb")));
+        window->setProperty("currentPage", chosen.value(QStringLiteral("page")));
         window->setProperty("currentNote", chosen.value(QStringLiteral("note")));
         window->setProperty("currentGif", chosen.value(QStringLiteral("gif")));
         window->setProperty("currentLive", false);
@@ -188,6 +195,13 @@ int main(int argc, char** argv) {
         return 2;
     }
     qputenv("QT_QUICK_CONTROLS_STYLE", "Basic");
+    QCoreApplication::setAttribute(Qt::AA_ShareOpenGLContexts);
+#ifdef BENDWALL_HAS_WEBENGINE
+    QtWebEngineQuick::initialize();
+#endif
+    /* QQuickFramebufferObject paints only on the OpenGL scene graph. Plasma's
+       default on some NVIDIA setups is Vulkan, which leaves this pane black. */
+    QQuickWindow::setGraphicsApi(QSGRendererInterface::OpenGL);
     QGuiApplication app(argc, argv);
     QGuiApplication::setApplicationName(QStringLiteral("bendwall-picker"));
     QGuiApplication::setOrganizationName(QStringLiteral("bendwall"));
@@ -215,6 +229,11 @@ int main(int argc, char** argv) {
                      [&](const QList<QQmlError>& list) { errors.append(list); });
     engine.rootContext()->setContextProperty(QStringLiteral("library"), &library);
     engine.rootContext()->setContextProperty(QStringLiteral("shell"), &shell);
+#ifdef BENDWALL_HAS_WEBENGINE
+    engine.rootContext()->setContextProperty(QStringLiteral("webEngineOk"), true);
+#else
+    engine.rootContext()->setContextProperty(QStringLiteral("webEngineOk"), false);
+#endif
     engine.load(QUrl(QStringLiteral("qrc:/Picker.qml")));
     if (engine.rootObjects().isEmpty()) {
         for (const QQmlError& err : errors)

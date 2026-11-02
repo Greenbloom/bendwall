@@ -62,8 +62,8 @@ gif = os.path.join(d, "1003", "preview.gif")
 os.makedirs(os.path.dirname(gif), exist_ok=True)
 subprocess.check_call([
     "ffmpeg", "-y", "-loglevel", "error",
+    "-f", "lavfi", "-i", "color=c=black:s=32x18:d=0.2",
     "-f", "lavfi", "-i", "color=c=0x33cc77:s=32x18:d=0.2",
-    "-f", "lavfi", "-i", "color=c=0x2244aa:s=32x18:d=0.2",
     "-filter_complex", "[0][1]concat=n=2:v=1:a=0",
     "-loop", "0", gif,
 ])
@@ -127,5 +127,36 @@ for i in range(0, len(raw), step):
     colors.add(raw[i:i+3])
 if len(colors) < 8:
     raise SystemExit("screenshot looks blank (%d colors)" % len(colors))
+import os
+thumbs = []
+for dirpath, _, names in os.walk(root + "/cache"):
+    for name in names:
+        if name.endswith(".png"):
+            thumbs.append(os.path.join(dirpath, name))
+if not thumbs:
+    raise SystemExit("no thumbnail cache")
+green = 0
+for path in thumbs:
+    raw_png = subprocess.check_output([
+        "ffmpeg", "-v", "error", "-i", path,
+        "-f", "rawvideo", "-pix_fmt", "rgb24", "-",
+    ])
+    if not raw_png:
+        raise SystemExit("empty thumb " + path)
+    dark = True
+    ghit = False
+    step = 3
+    for i in range(0, len(raw_png) - 2, step):
+        r, g, b = raw_png[i], raw_png[i + 1], raw_png[i + 2]
+        if r + g + b > 24:
+            dark = False
+        if g > 150 and r < 80 and b < 180:
+            ghit = True
+    if dark:
+        raise SystemExit("black thumbnail " + path)
+    if ghit:
+        green += 1
+if green < 1:
+    raise SystemExit("gif thumb did not keep the green frame")
 print("PICKER PASS")
 PY

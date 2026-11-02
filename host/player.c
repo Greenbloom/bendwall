@@ -7,10 +7,14 @@
 
 #include <ctype.h>
 #include <stdarg.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <dlfcn.h>
+#include <unistd.h>
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/hwcontext.h>
@@ -41,6 +45,9 @@ int bw_gl_quad(int prog, int tex,
 int bw_gl_verts(int prog, int tex, const float* xyuv);
 int bw_gl_image(int tex, int w, int h, const uint8_t* px, int n);
 int bw_gl_plane(int tex, int w, int h, const uint8_t* px, int comps);
+int bw_gl_dmabuf(int tex, int w, int h, int fd, unsigned fourcc,
+                 unsigned offset, unsigned pitch, uint64_t modifier, void** img);
+void bw_gl_dmabuf_drop(void** img, int n);
 int bw_gl_i1(int prog, const char* name, int v);
 int bw_gl_quad_planes(int prog, const int* tex, int ntex,
     uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1,
@@ -236,8 +243,11 @@ static void vid_avlog(void* avcl, int level, const char* fmt, va_list ap) {
   av_log_default_callback(avcl, level, fmt, ap);
 }
 
+static void dma_release_any(void);
+
 static void vid_close(void) {
   int i;
+  dma_release_any();
   if (g_vid.sws) sws_freeContext(g_vid.sws);
   if (g_vid.fr) av_frame_free(&g_vid.fr);
   if (g_vid.xfer) av_frame_free(&g_vid.xfer);
@@ -307,7 +317,329 @@ static int vid_convert_rgba(AVFrame* fr) {
   return 1;
 }
 
+/* libva 2 VADRMPRIMESurfaceDescriptor, copied so this file does not need va.h.
+   The object is 16 bytes and each layer is 56. Tail padding may round the
+   whole struct up; the field offsets are what vaExportSurfaceHandle writes. */
+#define BW_VA_PRIME2 0x40000000u
+#define BW_VA_EXPORT_READ 0x0001u
+#define BW_VA_EXPORT_SEPARATE 0x0004u
+#define BW_DRM_R8 0x20203852u
+#define BW_DRM_GR88 0x38385247u
+#define BW_DRM_RG88 0x38384752u
+#define BW_DRM_NV12 0x3231564eu
+#define BW_MOD_INVALID 0x00ffffffffffffffull
+
+typedef struct {
+  int fd;
+  uint32_t size;
+  uint64_t modifier;
+} BwPrimeObj;
+typedef struct {
+  uint32_t drm_format;
+  uint32_t num_planes;
+  uint32_t object_index[4];
+  uint32_t offset[4];
+  uint32_t pitch[4];
+} BwPrimeLayer;
+typedef struct {
+  uint32_t fourcc;
+  uint32_t width;
+  uint32_t height;
+  uint32_t num_objects;
+  BwPrimeObj objects[4];
+  uint32_t num_layers;
+  BwPrimeLayer layers[4];
+} BwPrimeDesc;
+typedef int (*BwVaExport)(void*, unsigned, uint32_t, uint32_t, void*);
+typedef int (*BwVaSync)(void*, unsigned);
+
+_Static_assert(sizeof(BwPrimeObj) == 16, "prime object");
+_Static_assert(sizeof(BwPrimeLayer) == 56, "prime layer");
+_Static_assert(offsetof(BwPrimeDesc, num_layers) == 80, "prime layers");
+_Static_assert(offsetof(BwPrimeDesc, layers) == 84, "prime layer0");
+
+typedef struct DmaPlane {
+  int fd;
+  unsigned fourcc;
+  unsigned offset;
+  unsigned pitch;
+  int w, h;
+  uint64_t modifier;
+} DmaPlane;
+
+static struct {
+  int on;
+  int skip;
+  int fail_logged;
+  int nfds;
+  int fds[4];
+  DmaPlane plane[2];
+  AVFrame* hold;
+  void* img[2];
+} g_dma;
+
+static void* g_stale_img[2];
+static int g_stale_fd[4];
+static int g_stale_nfds;
+static AVFrame* g_stale_hold;
+
+static void dma_close_fds(void) {
+  int i;
+  for (i = 0; i < g_dma.nfds; i++) {
+    if (g_dma.fds[i] >= 0) close(g_dma.fds[i]);
+    g_dma.fds[i] = -1;
+  }
+  g_dma.nfds = 0;
+  g_dma.on = 0;
+  if (g_dma.hold) av_frame_free(&g_dma.hold);
+}
+
+static void dma_reap(void) {
+  int i;
+  if (g_stale_img[0] || g_stale_img[1]) {
+    glFinish();
+    bw_gl_dmabuf_drop(g_stale_img, 2);
+  }
+  for (i = 0; i < g_stale_nfds; i++) {
+    if (g_stale_fd[i] >= 0) close(g_stale_fd[i]);
+    g_stale_fd[i] = -1;
+  }
+  g_stale_nfds = 0;
+  if (g_stale_hold) av_frame_free(&g_stale_hold);
+}
+
+/* The next decode runs before GL is current, so an imported image is parked
+   until upload_picture. A frame that was never imported can be closed now. */
+static void dma_retire(void) {
+  int i;
+  if (g_dma.img[0] || g_dma.img[1]) {
+    g_stale_img[0] = g_dma.img[0];
+    g_stale_img[1] = g_dma.img[1];
+    g_dma.img[0] = g_dma.img[1] = NULL;
+    for (i = 0; i < g_dma.nfds && g_stale_nfds < 4; i++)
+      g_stale_fd[g_stale_nfds++] = g_dma.fds[i];
+    g_dma.nfds = 0;
+    g_dma.on = 0;
+    if (g_stale_hold) av_frame_free(&g_stale_hold);
+    g_stale_hold = g_dma.hold;
+    g_dma.hold = NULL;
+    return;
+  }
+  dma_close_fds();
+}
+
+static void dma_shutdown_gl(void) {
+  dma_reap();
+  if (g_dma.img[0] || g_dma.img[1]) {
+    glFinish();
+    bw_gl_dmabuf_drop(g_dma.img, 2);
+  }
+  dma_close_fds();
+}
+
+static void dma_release_any(void) {
+  if (eglGetCurrentContext() != EGL_NO_CONTEXT) {
+    dma_shutdown_gl();
+    return;
+  }
+  if (!g_dma.img[0] && !g_dma.img[1] && !g_stale_img[0] && !g_stale_img[1]) {
+    dma_reap();
+    dma_close_fds();
+  }
+}
+
+static void dma_fail(const char* why) {
+  g_dma.skip = 1;
+  if (!g_dma.fail_logged) {
+    g_dma.fail_logged = 1;
+    fprintf(stderr, "bendwall: vaapi dma-buf %s; downloading the frame\n", why ? why : "failed");
+  }
+}
+
+static void vid_color_from(const AVFrame* src) {
+  g_vid.limited = src->color_range != AVCOL_RANGE_JPEG && src->format != AV_PIX_FMT_YUVJ420P;
+  /* HD is BT.709 unless the stream says BT.601. SD stays BT.601. */
+  if (src->colorspace == AVCOL_SPC_BT709) g_vid.bt709 = 1;
+  else if (src->colorspace == AVCOL_SPC_BT470BG || src->colorspace == AVCOL_SPC_SMPTE170M)
+    g_vid.bt709 = 0;
+  else g_vid.bt709 = src->height >= 720;
+}
+
+static void vid_log_decode(const char* how, int w, int h, const char* pix) {
+  if (g_vid.said) return;
+  g_vid.said = 1;
+  if (!how) how = "software";
+  snprintf(g_dec_how, sizeof g_dec_how, "%s", how);
+  fprintf(stderr, "bendwall: video decode %s %dx%d %s\n", how, w, h, pix ? pix : "?");
+}
+
+static void prime_close(BwPrimeDesc* d) {
+  uint32_t i;
+  if (!d) return;
+  if (d->num_objects > 4) d->num_objects = 4;
+  for (i = 0; i < d->num_objects; i++) {
+    if (d->objects[i].fd >= 0) close(d->objects[i].fd);
+    d->objects[i].fd = -1;
+  }
+}
+
+static int dma_keep_fd(int fd) {
+  int i;
+  if (fd < 0) return -1;
+  for (i = 0; i < g_dma.nfds; i++)
+    if (g_dma.fds[i] == fd) return fd;
+  if (g_dma.nfds >= 4) return -1;
+  g_dma.fds[g_dma.nfds++] = fd;
+  return fd;
+}
+
+static int dma_take_plane(const BwPrimeDesc* d, int layer, int plane, unsigned fourcc, int w, int h, int slot) {
+  const BwPrimeLayer* L;
+  uint32_t obj;
+  unsigned min_pitch;
+  if (!d || layer < 0 || layer >= 4 || plane < 0 || slot < 0 || slot > 1) return 0;
+  L = &d->layers[layer];
+  if ((int)L->num_planes <= plane) return 0;
+  obj = L->object_index[plane];
+  if (obj >= d->num_objects || obj >= 4) return 0;
+  if (dma_keep_fd(d->objects[obj].fd) < 0) return 0;
+  min_pitch = (unsigned)w;
+  if (fourcc == BW_DRM_GR88 || fourcc == BW_DRM_RG88) min_pitch = (unsigned)w * 2u;
+  if (L->pitch[plane] < min_pitch || w < 1 || h < 1) return 0;
+  g_dma.plane[slot].fd = d->objects[obj].fd;
+  g_dma.plane[slot].fourcc = fourcc;
+  g_dma.plane[slot].offset = L->offset[plane];
+  g_dma.plane[slot].pitch = L->pitch[plane];
+  g_dma.plane[slot].w = w;
+  g_dma.plane[slot].h = h;
+  g_dma.plane[slot].modifier = d->objects[obj].modifier;
+  return 1;
+}
+
+static int dma_consume(const BwPrimeDesc* d, int w, int h) {
+  int i, y = -1, uv = -1;
+  unsigned uv_fmt = 0;
+  int cw, ch;
+  if (!d || w < 2 || h < 2) return 0;
+  cw = w / 2;
+  ch = h / 2;
+  if (cw < 1) cw = 1;
+  if (ch < 1) ch = 1;
+  if (d->num_layers == 1 && d->layers[0].drm_format == BW_DRM_NV12 && d->layers[0].num_planes >= 2)
+    return dma_take_plane(d, 0, 0, BW_DRM_R8, w, h, 0)
+        && dma_take_plane(d, 0, 1, BW_DRM_GR88, cw, ch, 1);
+  if (d->num_layers < 1 || d->num_layers > 4) return 0;
+  for (i = 0; i < (int)d->num_layers && i < 4; i++) {
+    if (d->layers[i].drm_format == BW_DRM_R8 && y < 0) y = i;
+    if ((d->layers[i].drm_format == BW_DRM_GR88 || d->layers[i].drm_format == BW_DRM_RG88) && uv < 0) {
+      uv = i;
+      uv_fmt = d->layers[i].drm_format;
+    }
+  }
+  if (y < 0 || uv < 0) return 0;
+  return dma_take_plane(d, y, 0, BW_DRM_R8, w, h, 0)
+      && dma_take_plane(d, uv, 0, uv_fmt, cw, ch, 1);
+}
+
+static void* va_display(void) {
+  AVHWDeviceContext* dev;
+  if (!g_vid.hw_dev || !g_vid.hw_dev->data) return NULL;
+  dev = (AVHWDeviceContext*)g_vid.hw_dev->data;
+  if (!dev->hwctx) return NULL;
+  /* AVVAAPIDeviceContext starts with VADisplay, which is a pointer. */
+  return *(void**)dev->hwctx;
+}
+
+static int dma_export_once(void* display, unsigned sid, BwVaExport exp, uint32_t flags, int w, int h) {
+  BwPrimeDesc desc;
+  int st;
+  memset(&desc, 0, sizeof desc);
+  st = exp(display, sid, BW_VA_PRIME2, flags, &desc);
+  if (st != 0) return 0;
+  if (!dma_consume(&desc, w, h)) {
+    prime_close(&desc);
+    g_dma.nfds = 0;
+    g_dma.on = 0;
+    return 0;
+  }
+  return 1;
+}
+
+static int dma_export(AVFrame* fr) {
+  static BwVaExport exp;
+  static BwVaSync sync;
+  static int looked;
+  void* lib;
+  void* display;
+  unsigned sid;
+  dma_retire();
+  if (!looked) {
+    looked = 1;
+    lib = dlopen("libva.so.2", RTLD_NOLOAD | RTLD_LAZY);
+    if (!lib) lib = dlopen("libva.so.2", RTLD_LAZY);
+    if (lib) {
+      exp = (BwVaExport)dlsym(lib, "vaExportSurfaceHandle");
+      sync = (BwVaSync)dlsym(lib, "vaSyncSurface");
+    }
+  }
+  display = va_display();
+  sid = (unsigned)(uintptr_t)fr->data[3];
+  if (!exp || !display || !sid) {
+    dma_fail("export unavailable");
+    return 0;
+  }
+  if (sync) sync(display, sid);
+  if (!dma_export_once(display, sid, exp, BW_VA_EXPORT_READ | BW_VA_EXPORT_SEPARATE, fr->width, fr->height)
+      && !dma_export_once(display, sid, exp, BW_VA_EXPORT_READ, fr->width, fr->height)) {
+    dma_fail("export failed");
+    return 0;
+  }
+  if (!g_dma.hold) g_dma.hold = av_frame_alloc();
+  if (!g_dma.hold || av_frame_ref(g_dma.hold, fr) < 0) {
+    dma_close_fds();
+    dma_fail("could not hold the surface");
+    return 0;
+  }
+  vid_color_from(fr);
+  g_vid.w = fr->width;
+  g_vid.h = fr->height;
+  g_vid.nplane = 2;
+  g_vid.serial++;
+  g_dma.on = 1;
+  return 1;
+}
+
+static int dma_import_gl(void) {
+  int i;
+  for (i = 0; i < 2; i++) {
+    void* image = NULL;
+    int tex = bw_gl_dmabuf(g_plane[i], g_dma.plane[i].w, g_dma.plane[i].h,
+                           g_dma.plane[i].fd, g_dma.plane[i].fourcc,
+                           g_dma.plane[i].offset, g_dma.plane[i].pitch,
+                           g_dma.plane[i].modifier, &image);
+    if (tex <= 0) {
+      bw_gl_dmabuf_drop(g_dma.img, 2);
+      return 0;
+    }
+    g_plane[i] = tex;
+    g_dma.img[i] = image;
+  }
+  return 1;
+}
+
+static int vid_store_download(AVFrame* fr);
+
 static int vid_store(AVFrame* fr) {
+  if (!fr) return 0;
+  if (!g_dma.skip && g_vid.hw_type == AV_HWDEVICE_TYPE_VAAPI
+      && g_vid.hw_pix != AV_PIX_FMT_NONE && fr->format == g_vid.hw_pix) {
+    if (dma_export(fr)) return 1;
+  }
+  dma_retire();
+  return vid_store_download(fr);
+}
+
+static int vid_store_download(AVFrame* fr) {
   AVFrame* src = fr;
   int chroma_w, chroma_h;
   if (!fr) return 0;
@@ -318,12 +650,7 @@ static int vid_store(AVFrame* fr) {
     if (av_hwframe_transfer_data(g_vid.xfer, fr, 0) < 0) return 0;
     src = g_vid.xfer;
   }
-  g_vid.limited = src->color_range != AVCOL_RANGE_JPEG && src->format != AV_PIX_FMT_YUVJ420P;
-  /* HD is BT.709 unless the stream says BT.601. SD stays BT.601. */
-  if (src->colorspace == AVCOL_SPC_BT709) g_vid.bt709 = 1;
-  else if (src->colorspace == AVCOL_SPC_BT470BG || src->colorspace == AVCOL_SPC_SMPTE170M)
-    g_vid.bt709 = 0;
-  else g_vid.bt709 = src->height >= 720;
+  vid_color_from(src);
   if (src->format == AV_PIX_FMT_YUV420P || src->format == AV_PIX_FMT_YUVJ420P) {
     chroma_w = src->width / 2;
     chroma_h = src->height / 2;
@@ -350,15 +677,12 @@ static int vid_store(AVFrame* fr) {
     return 0;
   }
   g_vid.serial++;
-  if (!g_vid.said) {
+  {
     const char* pix = av_get_pix_fmt_name((enum AVPixelFormat)src->format);
     const char* how = "software";
-    g_vid.said = 1;
     if (g_vid.hw_dev && fr->format == g_vid.hw_pix && g_vid.hw_pix != AV_PIX_FMT_NONE)
       how = av_hwdevice_get_type_name(g_vid.hw_type);
-    if (!how) how = "software";
-    snprintf(g_dec_how, sizeof g_dec_how, "%s", how);
-    fprintf(stderr, "bendwall: video decode %s %dx%d %s\n", how, g_vid.w, g_vid.h, pix ? pix : "?");
+    vid_log_decode(how, g_vid.w, g_vid.h, pix);
   }
   return 1;
 }
@@ -752,7 +1076,31 @@ static int draw_yuv(void) {
 
 static void upload_picture(void) {
   int uw, uh;
+  if (eglGetCurrentContext() != EGL_NO_CONTEXT) dma_reap();
   if (!g_has_video) return;
+  if (g_dma.on && g_dma.img[0] && g_vid.serial == g_uploaded && g_plane[0] > 0) return;
+  if (g_dma.on && !g_dma.img[0]) {
+    if (dma_import_gl()) {
+      vid_log_decode("vaapi-dmabuf", g_vid.w, g_vid.h, "nv12");
+      if (g_plane[0] > 0) g_uploaded = g_vid.serial;
+      return;
+    }
+    dma_fail("import failed");
+    bw_gl_dmabuf_drop(g_dma.img, 2);
+    if (g_dma.hold) {
+      AVFrame* held = g_dma.hold;
+      g_dma.hold = NULL;
+      dma_close_fds();
+      if (!vid_store_download(held)) {
+        av_frame_free(&held);
+        return;
+      }
+      av_frame_free(&held);
+    } else {
+      dma_close_fds();
+      return;
+    }
+  }
   if (g_vid.nplane >= 2) {
     if (g_vid.serial == g_uploaded && g_plane[0] > 0) return;
     uw = g_vid.w / 2;
@@ -1831,6 +2179,7 @@ static void reset_plan(void) {
 
 static void play_close_unlocked(void) {
   if (g_gl && bw_gl_begin()) {
+    dma_shutdown_gl();
     if (g_tex > 0) { GLuint t = (GLuint)g_tex; glDeleteTextures(1, &t); }
     if (g_plane[0] > 0) { GLuint t = (GLuint)g_plane[0]; glDeleteTextures(1, &t); }
     if (g_plane[1] > 0) { GLuint t = (GLuint)g_plane[1]; glDeleteTextures(1, &t); }

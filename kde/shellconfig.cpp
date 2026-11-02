@@ -4,10 +4,69 @@
 #include <QDBusInterface>
 #include <QDBusReply>
 #include <QFile>
+#include <QHash>
+#include <QJSEngine>
+#include <QJSValue>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
-#include <QHash>
+
+class ScriptDesk : public QObject {
+    Q_OBJECT
+    Q_PROPERTY(int screen READ screen CONSTANT)
+    Q_PROPERTY(QString wallpaperPlugin READ wallpaperPlugin WRITE setWallpaperPlugin)
+    Q_PROPERTY(QVariantList currentConfigGroup READ currentConfigGroup WRITE setCurrentConfigGroup)
+
+public:
+    int m_screen = 0;
+    QString plugin;
+    QHash<QString, QString> cfg;
+    QVariantList group;
+
+    int screen() const { return m_screen; }
+    QString wallpaperPlugin() const { return plugin; }
+    void setWallpaperPlugin(const QString& value) { plugin = value; }
+    QVariantList currentConfigGroup() const { return group; }
+    void setCurrentConfigGroup(const QVariantList& value) { group = value; }
+
+    Q_INVOKABLE QString readConfig(const QString& key) const { return cfg.value(key); }
+
+    Q_INVOKABLE void writeConfig(const QString& key, const QJSValue& value) {
+        if (value.isBool())
+            cfg.insert(key, value.toBool() ? QStringLiteral("true") : QStringLiteral("false"));
+        else if (value.isNumber())
+            cfg.insert(key, QString::number(value.toInt()));
+        else
+            cfg.insert(key, value.toString());
+    }
+};
+
+class ScriptHost : public QObject {
+    Q_OBJECT
+
+public:
+    QJSEngine* engine = nullptr;
+    QList<ScriptDesk*>* desks = nullptr;
+    QString printed;
+
+    Q_INVOKABLE void print(const QJSValue& value) {
+        if (!printed.isEmpty())
+            printed += QLatin1Char('\n');
+        printed += value.toString();
+    }
+
+    Q_INVOKABLE QJSValue desktops() {
+        if (!engine || !desks)
+            return QJSValue(QJSValue::NullValue);
+        QJSValue array = engine->newArray(desks->size());
+        for (int i = 0; i < desks->size(); ++i) {
+            ScriptDesk* desk = desks->at(i);
+            QJSEngine::setObjectOwnership(desk, QJSEngine::CppOwnership);
+            array.setProperty(i, engine->newQObject(desk));
+        }
+        return array;
+    }
+};
 
 namespace {
 
@@ -81,7 +140,7 @@ QString readScript() {
         "    + ',\"volume\":' + JSON.stringify(vol)\n"
         "    + ',\"autoMute\":' + JSON.stringify(autoMute) + '}');\n"
         "}\n"
-        "'[' + parts.join(',') + ']'\n");
+        "print('[' + parts.join(',') + ']');\n");
 }
 
 QString writeScript(const QString& id, int screen, bool mute, int volume, bool autoMute) {
@@ -100,7 +159,7 @@ QString writeScript(const QString& id, int screen, bool mute, int volume, bool a
                "  d.writeConfig('AutoMuteOthers', %5);\n"
                "  n++;\n"
                "}\n"
-               "String(n)\n")
+               "print(String(n));\n")
         .arg(screen)
         .arg(jsQuote(id))
         .arg(mute ? QStringLiteral("true") : QStringLiteral("false"))
@@ -134,6 +193,98 @@ QList<ScreenAssign> fromJson(const QByteArray& bytes, QString* error) {
         out.append(screen);
     }
     return out;
+}
+
+struct DeskState {
+    int screen = 0;
+    QString plugin;
+    QHash<QString, QString> cfg;
+};
+
+QList<DeskState> desksFromAssign(const QList<ScreenAssign>& screens) {
+    QList<DeskState> desks;
+    for (const ScreenAssign& screen : screens) {
+        DeskState desk;
+        desk.screen = screen.screen;
+        desk.plugin = screen.plugin;
+        desk.cfg.insert(QStringLiteral("Item"), screen.item);
+        desk.cfg.insert(QStringLiteral("VideoMute"),
+                        screen.mute ? QStringLiteral("true") : QStringLiteral("false"));
+        desk.cfg.insert(QStringLiteral("VideoVolume"), QString::number(screen.volume));
+        desk.cfg.insert(QStringLiteral("AutoMuteOthers"),
+                        screen.autoMute ? QStringLiteral("true") : QStringLiteral("false"));
+        desks.append(desk);
+    }
+    return desks;
+}
+
+QList<ScreenAssign> assignFromDesks(const QList<DeskState>& desks) {
+    QList<ScreenAssign> screens;
+    for (const DeskState& desk : desks) {
+        ScreenAssign screen;
+        screen.screen = desk.screen;
+        screen.plugin = desk.plugin;
+        screen.item = desk.cfg.value(QStringLiteral("Item"));
+        screen.mute = parseBool(desk.cfg.value(QStringLiteral("VideoMute")), true);
+        screen.volume = parseVolume(desk.cfg.value(QStringLiteral("VideoVolume")));
+        screen.autoMute = parseBool(desk.cfg.value(QStringLiteral("AutoMuteOthers")), false);
+        screens.append(screen);
+    }
+    return screens;
+}
+
+/* Plasma's evaluateScript returns only what the script printed. The
+   completion value is discarded, including by this mock. */
+bool evalPrinted(const QString& script, QList<DeskState>* desks, QString* printed) {
+    QList<ScriptDesk*> live;
+    ScriptHost host;
+    host.desks = &live;
+    QString text;
+    bool ok = false;
+    for (const DeskState& state : *desks) {
+        auto* desk = new ScriptDesk();
+        desk->m_screen = state.screen;
+        desk->plugin = state.plugin;
+        desk->cfg = state.cfg;
+        QJSEngine::setObjectOwnership(desk, QJSEngine::CppOwnership);
+        live.append(desk);
+    }
+    {
+        QJSEngine js;
+        host.engine = &js;
+        QJSEngine::setObjectOwnership(&host, QJSEngine::CppOwnership);
+        js.globalObject().setProperty(QStringLiteral("__host"), js.newQObject(&host));
+        const QJSValue setup = js.evaluate(QStringLiteral(
+            "function print(v){ __host.print(v); }\n"
+            "function desktops(){ return __host.desktops(); }\n"));
+        if (!setup.isError()) {
+            const QJSValue result = js.evaluate(script);
+            ok = !result.isError();
+            text = host.printed;
+        }
+        host.engine = nullptr;
+    }
+    desks->clear();
+    for (ScriptDesk* desk : live) {
+        DeskState state;
+        state.screen = desk->m_screen;
+        state.plugin = desk->plugin;
+        state.cfg = desk->cfg;
+        desks->append(state);
+        delete desk;
+    }
+    live.clear();
+    host.desks = nullptr;
+    if (printed)
+        *printed = text.trimmed();
+    return ok;
+}
+
+QString unquotePrinted(QString body) {
+    body = body.trimmed();
+    if (body.startsWith(QLatin1Char('"')) && body.endsWith(QLatin1Char('"')) && body.size() >= 2)
+        body = body.mid(1, body.size() - 2);
+    return body.trimmed();
 }
 
 QByteArray toJson(const QList<ScreenAssign>& screens) {
@@ -224,33 +375,48 @@ void ShellConfig::refresh() {
     setStatus(QStringLiteral("%1 screens").arg(m_screens.size()));
 }
 
-bool ShellConfig::readMock() {
-    QFile file(m_mock);
-    if (!file.exists()) {
-        replaceScreens({});
+bool loadDesks(const QString& path, QList<DeskState>* desks) {
+    desks->clear();
+    QFile file(path);
+    if (!file.exists())
         return true;
-    }
-    if (!file.open(QIODevice::ReadOnly)) {
+    if (!file.open(QIODevice::ReadOnly))
+        return false;
+    QString error;
+    const QList<ScreenAssign> screens = fromJson(file.readAll(), &error);
+    if (!error.isEmpty())
+        return false;
+    *desks = desksFromAssign(screens);
+    return true;
+}
+
+bool saveDesks(const QString& path, const QList<DeskState>& desks) {
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return false;
+    file.write(toJson(assignFromDesks(desks)));
+    return true;
+}
+
+bool ShellConfig::readMock() {
+    QList<DeskState> desks;
+    if (!loadDesks(m_mock, &desks)) {
         setError(QStringLiteral("Could not read %1.").arg(m_mock));
         return false;
     }
+    QString printed;
+    if (!evalPrinted(readScript(), &desks, &printed)) {
+        setError(QStringLiteral("Screen list is not valid JSON."));
+        return false;
+    }
     QString error;
-    const QList<ScreenAssign> screens = fromJson(file.readAll(), &error);
+    const QByteArray body = unquotePrinted(printed).toUtf8();
+    const QList<ScreenAssign> screens = fromJson(QByteArray("{\"screens\":") + body + "}", &error);
     if (!error.isEmpty()) {
         setError(error);
         return false;
     }
     replaceScreens(screens);
-    return true;
-}
-
-bool ShellConfig::writeMock() {
-    QFile file(m_mock);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        setError(QStringLiteral("Could not write %1.").arg(m_mock));
-        return false;
-    }
-    file.write(toJson(m_screens));
     return true;
 }
 
@@ -298,7 +464,7 @@ bool ShellConfig::writeDBus(const QString& id, int screen) {
         return false;
     }
     bool ok = false;
-    const int n = reply.value().toInt(&ok);
+    const int n = unquotePrinted(reply.value()).toInt(&ok);
     if (!ok || n < 1) {
         setError(QStringLiteral("No screen matched that choice."));
         return false;
@@ -313,26 +479,28 @@ bool ShellConfig::apply(const QString& id, int screen) {
         return false;
     }
     if (!m_mock.isEmpty()) {
-        if (m_screens.isEmpty() && !readMock())
+        QList<DeskState> desks;
+        if (!loadDesks(m_mock, &desks)) {
+            setError(QStringLiteral("Could not read %1.").arg(m_mock));
             return false;
-        bool hit = false;
-        for (ScreenAssign& row : m_screens) {
-            if (screen >= 0 && row.screen != screen)
-                continue;
-            row.plugin = QString::fromLatin1(kPlugin);
-            row.item = id;
-            row.mute = m_mute;
-            row.volume = m_volume;
-            row.autoMute = m_auto;
-            hit = true;
         }
-        if (!hit) {
+        QString printed;
+        if (!evalPrinted(writeScript(id, screen, m_mute, m_volume, m_auto), &desks, &printed)) {
             setError(QStringLiteral("No screen matched that choice."));
             return false;
         }
-        if (!writeMock())
+        bool ok = false;
+        const int n = unquotePrinted(printed).toInt(&ok);
+        if (!ok || n < 1) {
+            setError(QStringLiteral("No screen matched that choice."));
             return false;
-        emit screensChanged();
+        }
+        if (!saveDesks(m_mock, desks)) {
+            setError(QStringLiteral("Could not write %1.").arg(m_mock));
+            return false;
+        }
+        if (!readMock())
+            return false;
         setStatus(QStringLiteral("Applied %1.").arg(id));
         return true;
     }
@@ -403,3 +571,5 @@ QHash<QString, QString> ShellConfig::activeMap() const {
     }
     return map;
 }
+
+#include "shellconfig.moc"

@@ -9,6 +9,7 @@
 #include <GL/gl.h>
 #include <GL/glext.h>
 #include <png.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -90,6 +91,7 @@ int bw_gl_fvn(int prog, const char* name, const float* v, int count);
 int bw_gl_read(uint8_t* dst, int n);
 int bw_gl_begin(void);
 int bw_gl_end(void);
+static int ensure_image_procs(void);
 void bw_gl_shutdown(void);
 int bw_gl_quad(int prog, int tex,
     uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1,
@@ -711,6 +713,141 @@ int bw_gl_plane(int tex, int w, int h, const uint8_t* px, int comps) {
   glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
   glTexImage2D(GL_TEXTURE_2D, 0, (GLint)internal, w, h, 0, fmt, GL_UNSIGNED_BYTE, px);
   return tex;
+}
+
+#ifndef EGL_LINUX_DMA_BUF_EXT
+#define EGL_LINUX_DMA_BUF_EXT 0x3270
+#endif
+#ifndef EGL_LINUX_DRM_FOURCC_EXT
+#define EGL_LINUX_DRM_FOURCC_EXT 0x3271
+#endif
+#ifndef EGL_DMA_BUF_PLANE0_FD_EXT
+#define EGL_DMA_BUF_PLANE0_FD_EXT 0x3272
+#endif
+#ifndef EGL_DMA_BUF_PLANE0_OFFSET_EXT
+#define EGL_DMA_BUF_PLANE0_OFFSET_EXT 0x3273
+#endif
+#ifndef EGL_DMA_BUF_PLANE0_PITCH_EXT
+#define EGL_DMA_BUF_PLANE0_PITCH_EXT 0x3274
+#endif
+#ifndef EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT
+#define EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT 0x3443
+#endif
+#ifndef EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT
+#define EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT 0x3444
+#endif
+
+/* DRM_FORMAT_MOD_INVALID. A real modifier, including 0 (linear), is passed through. */
+#define BW_MOD_INVALID 0x00ffffffffffffffull
+
+static EGLImage bw_dma_image(int w, int h, int fd, unsigned fourcc,
+                             unsigned offset, unsigned pitch, uint64_t modifier) {
+  EGLAttrib attr[20];
+  int n = 0, with_mod;
+  PFNEGLCREATEIMAGEPROC create;
+  EGLImage img;
+  attr[n++] = EGL_WIDTH;
+  attr[n++] = w;
+  attr[n++] = EGL_HEIGHT;
+  attr[n++] = h;
+  attr[n++] = EGL_LINUX_DRM_FOURCC_EXT;
+  attr[n++] = (EGLAttrib)fourcc;
+  attr[n++] = EGL_DMA_BUF_PLANE0_FD_EXT;
+  attr[n++] = fd;
+  attr[n++] = EGL_DMA_BUF_PLANE0_OFFSET_EXT;
+  attr[n++] = (EGLAttrib)offset;
+  attr[n++] = EGL_DMA_BUF_PLANE0_PITCH_EXT;
+  attr[n++] = (EGLAttrib)pitch;
+  with_mod = modifier != BW_MOD_INVALID;
+  if (with_mod) {
+    attr[n++] = EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT;
+    attr[n++] = (EGLAttrib)(modifier & 0xffffffffu);
+    attr[n++] = EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT;
+    attr[n++] = (EGLAttrib)(modifier >> 32);
+  }
+  attr[n++] = EGL_NONE;
+  create = (PFNEGLCREATEIMAGEPROC)eglGetProcAddress("eglCreateImage");
+  if (create) {
+    img = create(g_dpy, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, (EGLClientBuffer)NULL, attr);
+    if (img != EGL_NO_IMAGE)
+      return img;
+    if (with_mod) {
+      attr[n - 5] = EGL_NONE;
+      img = create(g_dpy, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, (EGLClientBuffer)NULL, attr);
+      if (img != EGL_NO_IMAGE)
+        return img;
+    }
+  }
+  if (ensure_image_procs() && g_create_image) {
+    EGLint khr[20];
+    int i;
+    for (i = 0; i < n && i < 20; i++)
+      khr[i] = (EGLint)attr[i];
+    img = (EGLImage)g_create_image(g_dpy, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT,
+                                   (EGLClientBuffer)NULL, khr);
+    if (img != EGL_NO_IMAGE)
+      return img;
+  }
+  return EGL_NO_IMAGE;
+}
+
+int bw_gl_dmabuf(int tex, int w, int h, int fd, unsigned fourcc,
+                 unsigned offset, unsigned pitch, uint64_t modifier, void** img) {
+  GLuint t;
+  EGLImage image;
+  int fresh = 0;
+  typedef void (*PFN_TARGET)(GLenum, void*);
+  PFN_TARGET target;
+  if (!g_ok || !img || fd < 0 || w < 1 || h < 1)
+    return 0;
+  *img = NULL;
+  image = bw_dma_image(w, h, fd, fourcc, offset, pitch, modifier);
+  if (image == EGL_NO_IMAGE)
+    return 0;
+  if (tex <= 0) {
+    glGenTextures(1, &t);
+    tex = (int)t;
+    fresh = 1;
+  }
+  glBindTexture(GL_TEXTURE_2D, (GLuint)tex);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+  target = (PFN_TARGET)eglGetProcAddress("glEGLImageTargetTexture2DOES");
+  if (!target) {
+    eglDestroyImage(g_dpy, image);
+    if (fresh) glDeleteTextures(1, &t);
+    return 0;
+  }
+  while (glGetError() != GL_NO_ERROR) {}
+  target(GL_TEXTURE_2D, image);
+  if (glGetError() != GL_NO_ERROR) {
+    eglDestroyImage(g_dpy, image);
+    if (fresh) glDeleteTextures(1, &t);
+    return 0;
+  }
+  /* GR88 names G as the first byte (U) and R as the second (V). Importing
+     that fourcc leaves .r = U and .g = V on Mesa and current NVIDIA, which
+     is what the NV12 shader already samples. */
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_R, GL_RED);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_G, GL_GREEN);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_B, GL_RED);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_A, GL_ONE);
+  *img = image;
+  return tex;
+}
+
+void bw_gl_dmabuf_drop(void** img, int n) {
+  int i;
+  if (!img || g_dpy == EGL_NO_DISPLAY)
+    return;
+  for (i = 0; i < n; i++) {
+    if (!img[i])
+      continue;
+    eglDestroyImage(g_dpy, (EGLImage)img[i]);
+    img[i] = NULL;
+  }
 }
 
 int bw_gl_i1(int prog, const char* name, int v) {

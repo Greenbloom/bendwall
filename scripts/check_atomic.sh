@@ -57,4 +57,35 @@ if [ "$livemode" != "$srcmode" ] || [ "$qmlmode" != "$srcmode" ]; then
   echo "mode src=$srcmode so=$livemode qml=$qmlmode" >&2
   exit 1
 fi
+
+# A wallpaper package is more than one file. The second file used to be
+# installed with src/dest already overwritten by the first, so mkdir treated
+# contents/ui/blank.html as a directory.
+pkg=$root/pkg
+mkdir -p "$pkg/contents/ui" "$pkg/contents/config"
+printf 'blank-v1' > "$pkg/contents/ui/blank.html"
+printf 'qml-body' > "$pkg/contents/ui/main.qml"
+printf '<config/>' > "$pkg/contents/config/main.xml"
+printf '{}\n' > "$pkg/metadata.json"
+chmod 644 "$pkg/contents/ui/blank.html" "$pkg/contents/ui/main.qml" \
+  "$pkg/contents/config/main.xml" "$pkg/metadata.json"
+atomic_tree "$pkg" "$root/dest/wp"
+atomic_tree "$pkg" "$root/dest/wp"
+printf 'blank-v2' > "$pkg/contents/ui/blank.html"
+printf 'qml-v2' > "$pkg/contents/ui/main.qml"
+atomic_tree "$pkg" "$root/dest/wp"
+for rel in contents/ui/blank.html contents/ui/main.qml contents/config/main.xml metadata.json; do
+  if [ ! -f "$root/dest/wp/$rel" ]; then
+    echo "missing installed file $rel" >&2
+    exit 1
+  fi
+  if ! cmp -s "$pkg/$rel" "$root/dest/wp/$rel"; then
+    echo "tree mismatch $rel" >&2
+    exit 1
+  fi
+done
+if [ -d "$root/dest/wp/contents/ui/blank.html" ]; then
+  echo "blank.html was created as a directory" >&2
+  exit 1
+fi
 echo ATOMIC PASS

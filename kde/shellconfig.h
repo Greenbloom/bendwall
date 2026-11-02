@@ -6,7 +6,8 @@
 #include <QVariantList>
 
 /* Per-screen Bendwall assignment. screen -1 in apply() means every screen
-   plasmashell reports. The mock file stands in for the D-Bus call. */
+   plasmashell reports. The mock file is the desktop store. The same scripts
+   Plasma runs are evaluated here, and only print() output is read back. */
 struct ScreenAssign {
     int screen = 0;
     QString plugin;
@@ -57,7 +58,6 @@ signals:
 
 private:
     bool readMock();
-    bool writeMock();
     bool readDBus();
     bool writeDBus(const QString& id, int screen);
     void setError(const QString& text);

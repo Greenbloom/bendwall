@@ -16,6 +16,7 @@ struct Paper {
     QString dir;
     QString preview;
     QString thumb;
+    QString page;
     QString note;
     QStringList tags;
     bool gif = false;
@@ -45,6 +46,7 @@ public:
         TagsRole,
         GifRole,
         LiveRole,
+        PageRole,
         ActiveRole
     };
 
